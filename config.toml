@@ -1,0 +1,20 @@
+[window]
+width = 800
+height = 600
+fullscreen = false
+
+[grid]
+width = 5
+height = 5
+
+[mouse]
+scroll_steps = 21
+
+[tool]
+min_effect_radius = 0.5
+max_effect_radius = inf
+height_brush_sensitivity = 0.01
+
+[scene]
+show_vertices = false
+preserve_aspect_ratio = false

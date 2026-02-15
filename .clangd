@@ -1,0 +1,20 @@
+If:
+  PathMatch: .*compute.*\.(h|cu|cuh)$
+CompileFlags:
+  Compiler: /usr/bin/clang++-18
+  Remove:
+    - -forward-unknown-to-host-compiler
+    - --options-file
+    - --options-file=*
+    - -rdc=*
+    - --generate-code=*
+    - -arch=*
+    - -Xcompiler=*
+    - -x
+    - cu
+    - -std=gnu99
+  Add: [-x, c++, -w]
+Diagnostics:
+  Suppress: "*"
+  UnusedIncludes: None
+  MissingIncludes: None
