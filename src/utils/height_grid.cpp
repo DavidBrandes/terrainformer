@@ -4,23 +4,23 @@
 
 #include <cmath>
 
-HeightGrid make_sinusoidal_height_grid(Config const& config) {
+HeightGrid make_sinusoidal_height_grid(GridConfig const& config) {
   std::vector<float> positions;
   std::vector<float> heights;
 
-  heights.reserve(static_cast<size_t>(config.grid.size.width * config.grid.size.height));
-  positions.reserve(static_cast<size_t>(config.grid.size.width * config.grid.size.height * 2));
+  heights.reserve(static_cast<size_t>(config.size.width * config.size.height));
+  positions.reserve(static_cast<size_t>(config.size.width * config.size.height * 2));
 
   float offset = HeightGrid::HEIGHT_RANGE.midpoint();
   float scale = HeightGrid::HEIGHT_RANGE.span() / 4; // filling half of the range
 
-  for (int i = 0; i < config.grid.size.height; ++i) {
-    for (int j = 0; j < config.grid.size.width; ++j) {
+  for (int i = 0; i < config.size.height; ++i) {
+    for (int j = 0; j < config.size.width; ++j) {
       float x = static_cast<float>(j);
       float y = static_cast<float>(i);
 
-      float x_norm = (x / static_cast<float>(config.grid.size.width - 1)) * 2.0f - 1.0f;
-      float y_norm = (y / static_cast<float>(config.grid.size.height - 1)) * 2.0f - 1.0f;
+      float x_norm = (x / static_cast<float>(config.size.width - 1)) * 2.0f - 1.0f;
+      float y_norm = (y / static_cast<float>(config.size.height - 1)) * 2.0f - 1.0f;
 
       float height = offset + scale * sinf(x_norm * PI) * cosf(y_norm * PI);
 
@@ -30,5 +30,5 @@ HeightGrid make_sinusoidal_height_grid(Config const& config) {
     }
   }
 
-  return HeightGrid{.size = config.grid.size, .positions = positions, .heights = heights};
+  return HeightGrid{.size = config.size, .positions = positions, .heights = heights};
 }

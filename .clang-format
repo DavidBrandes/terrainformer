@@ -1,4 +1,5 @@
 BasedOnStyle: LLVM
+AlwaysBreakTemplateDeclarations: Yes
 ColumnLimit: 120
 PointerAlignment: Left
 QualifierAlignment: Right

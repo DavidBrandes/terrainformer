@@ -14,6 +14,8 @@ struct Point {
 struct Size {
   int width;
   int height;
+
+  bool empty() const { return width <= 0 || height <= 0; }
 };
 
 struct Range {

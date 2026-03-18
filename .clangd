@@ -1,5 +1,5 @@
 If:
-  PathMatch: .*compute.*\.(h|cu|cuh)$
+  PathMatch: .*(compute|perf).*\.(h|cpp|cu|cuh)$
 CompileFlags:
   Compiler: /usr/bin/clang++-18
   Remove:
@@ -13,7 +13,7 @@ CompileFlags:
     - -x
     - cu
     - -std=gnu99
-  Add: [-x, c++, -w]
+  Add: [-x, c++, -Isrc, -Iperf]
 Diagnostics:
   Suppress: "*"
   UnusedIncludes: None

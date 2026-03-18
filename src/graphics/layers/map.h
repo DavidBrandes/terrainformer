@@ -15,7 +15,6 @@ public:
   MapLayer(MapLayer&& other) = delete;
   MapLayer& operator=(MapLayer&& other) = delete;
 
-  // TODO check if inlining made this better, compare with -flto flag
   GLuint vao() const { return _vao; }
   GLuint heightsVbo() const { return _heightsVbo; }
   GLsizei indexCount() const { return _indexCount; }

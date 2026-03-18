@@ -1,19 +1,19 @@
 [window]
-width = 800
+width = 960
 height = 600
 fullscreen = false
 
 [grid]
-width = 5
-height = 5
+width = 960
+height = 600
 
 [mouse]
 scroll_steps = 21
 
 [tool]
-min_effect_radius = 0.5
+min_effect_radius = 0.1
 max_effect_radius = inf
-height_brush_sensitivity = 0.01
+height_brush_sensitivity = 0.02
 
 [scene]
 show_vertices = false

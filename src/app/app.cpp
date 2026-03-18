@@ -7,7 +7,7 @@
 Application::Application(Config const& config)
     : _window(Window{config}), _gui(GUI{_window}), _renderer(Renderer{}), _sceneController(SceneController{config}) {
 
-  HeightGrid height_grid = make_sinusoidal_height_grid(config);
+  HeightGrid height_grid = make_sinusoidal_height_grid(config.grid);
   _scene = make_scene(height_grid);
   _resources = GpuResources::make(_scene);
 }
