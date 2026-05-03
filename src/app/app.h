@@ -34,5 +34,5 @@ private:
   Renderer _renderer;
   SceneController _sceneController;
   std::shared_ptr<Scene> _scene;
-  std::shared_ptr<GpuResources> _resources;
+  std::shared_ptr<compute::GpuResources> _resources;
 };

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "utils/geometry.h"
+#include "utils/types.h"
 
 struct MouseState {
   static constexpr Range SCROLL = {-1.0f, 1.0f};

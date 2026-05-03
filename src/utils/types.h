@@ -30,3 +30,8 @@ struct Circle {
   Point center;
   float radius;
 };
+
+struct BrushDab {
+  Circle circle;
+  float intensity;
+};

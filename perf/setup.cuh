@@ -1,0 +1,83 @@
+#pragma once
+
+#include "utils/height_grid.h"
+#include "utils/types.h"
+
+#include <iomanip>
+#include <iostream>
+
+namespace perf {
+
+template <typename T>
+struct GpuBuffer {
+  GpuBuffer(int size) {
+    this->size = size;
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&data), size * sizeof(T)));
+  }
+  ~GpuBuffer() { CUDA_CHECK(cudaFree(data)); }
+
+  GpuBuffer(GpuBuffer const& other) = delete;
+  GpuBuffer& operator=(GpuBuffer const& other) = delete;
+
+  GpuBuffer(GpuBuffer&& other) noexcept {
+    data = other.data;
+    size = other.size;
+    other.data = nullptr;
+  }
+
+  GpuBuffer& operator=(GpuBuffer&& other) noexcept {
+    if (this != &other) {
+      CUDA_CHECK(cudaFree(data));
+
+      data = other.data;
+      size = other.size;
+      other.data = nullptr;
+    }
+
+    return *this;
+  }
+
+  T* data;
+  int size;
+};
+
+GpuBuffer<float> make_gpu_buffer(HeightGrid const& height_grid);
+
+template <typename T>
+void benchmark(T&& func) {
+  constexpr int warmup_iterations = 5;
+  constexpr int benchmark_iterations = 100;
+
+  for (int i = 0; i < warmup_iterations; ++i) {
+    func();
+  }
+
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  cudaEvent_t start, stop;
+  CUDA_CHECK(cudaEventCreate(&start));
+  CUDA_CHECK(cudaEventCreate(&stop));
+
+  CUDA_CHECK(cudaEventRecord(start));
+
+  for (int i = 0; i < benchmark_iterations; ++i) {
+    func();
+  }
+
+  CUDA_CHECK(cudaEventRecord(stop));
+  CUDA_CHECK(cudaEventSynchronize(stop));
+
+  float ms;
+  CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
+
+  float avg_us = (ms / benchmark_iterations) * 1000;
+
+  std::cout << "Average runtime across " << benchmark_iterations << " iterations: " << std::fixed
+            << std::setprecision(2) << avg_us << " µs" << std::endl;
+}
+
+Point point_from_normalized(GridConfig grid_config, float x_normalized = 0.5f, float y_normalized = 0.5f);
+float radius_from_normalized(GridConfig grid_config, float radius_normalized = 0.5f);
+BrushDab make_brush_dab(Point center, float radius, float intensity = 0.01f);
+
+} // namespace perf

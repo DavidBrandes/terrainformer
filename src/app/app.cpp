@@ -9,7 +9,7 @@ Application::Application(Config const& config)
 
   HeightGrid height_grid = make_sinusoidal_height_grid(config.grid);
   _scene = make_scene(height_grid);
-  _resources = GpuResources::make(_scene);
+  _resources = compute::GpuResources::make(_scene);
 }
 
 void Application::initialize(ApplicationState& state) { _sceneController.initialize(_resources, state); }

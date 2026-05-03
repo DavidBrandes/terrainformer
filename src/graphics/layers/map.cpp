@@ -63,6 +63,8 @@ MapLayer::MapLayer(HeightGrid const& height_grid) {
 
   glBindBuffer(GL_ARRAY_BUFFER, 0);
   glBindVertexArray(0);
+
+  _size = height_grid.size;
 }
 
 MapLayer::~MapLayer() {
@@ -71,4 +73,3 @@ MapLayer::~MapLayer() {
   glDeleteBuffers(1, &_ebo);
   glDeleteVertexArrays(1, &_vao);
 }
-

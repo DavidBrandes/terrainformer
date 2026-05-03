@@ -2,10 +2,9 @@
 
 #include "app/state.h"
 #include "compute/compute.h"
-#include "compute/parameters.h"
 #include "utils/config.h"
-#include "utils/geometry.h"
 #include "utils/height_grid.h"
+#include "utils/types.h"
 
 #include <algorithm>
 
@@ -14,12 +13,14 @@ constexpr float CONTOUR_THRESHOLD = 0.0f; // TODO define somehow else
 SceneController::SceneController(Config const& config)
     : _gridSize(config.grid.size), _effectRadius(config.tool.effectRadius),
       _heightBrushIntensity(HeightGrid::HEIGHT_RANGE.span() * config.tool.heightBrushSensitivity),
-      _initialSceneConfig(config.scene) {}
+      _initialSceneConfig(config.scene) {
+  float min_grid_dim =
+      std::min({static_cast<float>(_gridSize.width), static_cast<float>(_gridSize.height), _effectRadius.max});
+  float max_radius = static_cast<float>(min_grid_dim - 1) / 2;
+  _radiusRange = std::min(max_radius, _effectRadius.max) - _effectRadius.min;
+}
 
 void SceneController::updateCropState(ApplicationState& state) {
-  // TODO can we optimize this in the renderer and when passing the values to the shaders,
-  // e.g. by not recomputing each loop
-  // TODO check the presetting of min and max with compiler exploreer
   state.crop.min = Point{0, 0};
   state.crop.max = Point{_gridSize.width - 1, _gridSize.height - 1};
 
@@ -29,10 +30,9 @@ void SceneController::updateCropState(ApplicationState& state) {
 
   float window_aspect_ratio =
       static_cast<float>(state.window.size.height) / static_cast<float>(state.window.size.width);
-  // TODO precompute
   float grid_aspect_ratio = static_cast<float>(_gridSize.height - 1) / static_cast<float>(_gridSize.width - 1);
 
-  // We need to crop along the heihgt/ y-axis
+  // We need to crop along the height/ y-axis
   if (window_aspect_ratio < grid_aspect_ratio) {
     float target_height = static_cast<float>(_gridSize.width - 1) * window_aspect_ratio;
     float offset = (static_cast<float>(_gridSize.height - 1) - target_height) / 2;
@@ -60,7 +60,7 @@ void SceneController::updateVertices(VertexLayer& vertex, ApplicationState& stat
 }
 
 // TODO split into smaller chunks
-void SceneController::update(std::shared_ptr<GpuResources> resources, ApplicationState& state) {
+void SceneController::update(std::shared_ptr<compute::GpuResources> resources, ApplicationState& state) {
   updateCropState(state);
   updateVertices(resources->scene()->vertex, state);
 
@@ -79,19 +79,13 @@ void SceneController::update(std::shared_ptr<GpuResources> resources, Applicatio
     return;
   }
 
-  // TODO precompute and profile
-  float min_grid_dim =
-      std::min({static_cast<float>(_gridSize.width), static_cast<float>(_gridSize.height), _effectRadius.max});
-  float max_radius = static_cast<float>(min_grid_dim - 1) / 2;
-  float radius_range = std::min(max_radius, _effectRadius.max) - _effectRadius.min;
-
   float x =
       (state.mouse.pixel.x / static_cast<float>(state.window.size.width)) * static_cast<float>(_gridSize.width - 1);
   float y =
       (state.mouse.pixel.y / static_cast<float>(state.window.size.height)) * static_cast<float>(_gridSize.height - 1);
 
   float scroll_normalized = (state.mouse.scroll - MouseState::SCROLL.min) / MouseState::SCROLL.span();
-  float radius = _effectRadius.min + scroll_normalized * radius_range;
+  float radius = _effectRadius.min + scroll_normalized * _radiusRange;
 
   resources->scene()->circle.update(CircleLayer::Parameters{
       .circle = {Point{x, y}, radius},
@@ -106,13 +100,17 @@ void SceneController::update(std::shared_ptr<GpuResources> resources, Applicatio
     float intensity = state.mouse.button == MouseState::Button::LEFT ? _heightBrushIntensity : -_heightBrushIntensity;
     BrushDab brush_dab{.circle = {Point{x, y}, radius}, .intensity = intensity};
 
-    modify_height(resources->map(), _gridSize, HeightGrid::HEIGHT_RANGE, brush_dab, CONTOUR_THRESHOLD);
+    compute::Result result = modify_height(resources->map(), HeightGrid::HEIGHT_RANGE, brush_dab, CONTOUR_THRESHOLD);
+
+    resources->scene()->contour.update(result.contourSegmentCount);
   }
 }
 
-void SceneController::initialize(std::shared_ptr<GpuResources> resources, ApplicationState& state) {
+void SceneController::initialize(std::shared_ptr<compute::GpuResources> resources, ApplicationState& state) {
   state.scene.preserveAspectRatio = _initialSceneConfig.preserveAspectRatio;
   state.scene.showVertices = _initialSceneConfig.showVertices;
 
-  compute_contour(resources->map(), _gridSize, CONTOUR_THRESHOLD);
+  compute::Result result = compute_contour(resources->map(), CONTOUR_THRESHOLD);
+
+  resources->scene()->contour.update(result.contourSegmentCount);
 }

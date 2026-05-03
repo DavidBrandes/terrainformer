@@ -1,5 +1,5 @@
 BUILD_DIR := build
-BUILD_TYPE ?= Debug
+BUILD_TYPE ?= Release
 CMAKE_FLAGS ?=
 TARGET := terrainformer
 
@@ -14,7 +14,6 @@ build:
 run: build
 	@__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia ./$(BUILD_DIR)/bin/$(TARGET)
 
-perf: BUILD_TYPE := Release
 perf: CMAKE_FLAGS := -DBUILD_PERF=ON
 perf: build
 

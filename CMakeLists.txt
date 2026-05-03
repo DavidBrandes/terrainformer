@@ -79,6 +79,8 @@ set(LIB_SOURCES
     src/utils/config.cpp
     src/compute/compute.cu
     src/compute/resources.cu
+    src/compute/mapped_resources.cu
+    src/compute/utils.cu
     src/compute/kernels/marching_squares.cu
     src/compute/kernels/smoothstep.cu
 )
@@ -113,7 +115,6 @@ target_compile_options(terrainformer_lib PRIVATE
 target_compile_options(terrainformer_lib PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:
         -Xcompiler=-Wall,-Wextra,-Wsign-compare
-        #-Wdefault-stream-launch  TODO check if needed
     >
 )
 

@@ -1,13 +1,19 @@
 #pragma once
 
-#include "compute/parameters.h"
 #include "compute/resources.h"
-#include "parameters.h"
-#include "utils/geometry.h"
+#include "utils/types.h"
 
-Region brush_dab_region(BrushDab brush_dab, Size size);
+namespace compute {
 
-void compute_contour(std::unique_ptr<MappedGpuResources> resources, Size grid_size, float threshold);
+class MappedGpuResources;
 
-void modify_height(std::unique_ptr<MappedGpuResources> resources, Size grid_size, Range height_range,
-                   BrushDab brush_dab, float contour_threshold);
+struct Result {
+  int contourSegmentCount;
+};
+
+Result compute_contour(std::shared_ptr<MappedGpuResources> resources, float threshold);
+
+Result modify_height(std::shared_ptr<MappedGpuResources> resources, Range height_range, BrushDab brush_dab,
+                     float contour_threshold);
+
+} // namespace compute

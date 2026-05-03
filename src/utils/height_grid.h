@@ -1,7 +1,7 @@
 #pragma once
 
 #include "utils/config.h"
-#include "utils/geometry.h"
+#include "utils/types.h"
 
 #include <vector>
 

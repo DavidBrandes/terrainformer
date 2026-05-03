@@ -18,6 +18,7 @@ public:
   GLuint vao() const { return _vao; }
   GLuint vbo() const { return _vbo; }
 
+  void update(int segment_count);
   GLsizei segmentCount() const { return _segmentCount; }
 
 private:

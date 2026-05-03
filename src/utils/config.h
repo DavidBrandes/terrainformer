@@ -1,6 +1,6 @@
 #pragma once
 
-#include "utils/geometry.h"
+#include "utils/types.h"
 
 struct WindowConfig {
   Size size;

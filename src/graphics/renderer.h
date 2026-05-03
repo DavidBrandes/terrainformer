@@ -3,7 +3,7 @@
 #include "app/state.h"
 #include "graphics/scene.h"
 #include "utils/config.h"
-#include "utils/geometry.h"
+#include "utils/types.h"
 
 #include <glad/gl.h>
 
