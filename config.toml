@@ -1,11 +1,11 @@
 [window]
-width = 960
-height = 600
+width = 900
+height = 450
 fullscreen = false
 
 [grid]
 width = 900
-height = 500
+height = 450
 
 [mouse]
 scroll_steps = 21

@@ -24,10 +24,12 @@ void launch_smoothstep() {
 
   compute::Region region = compute::aligned_brush_dab_region(brush_dab, GRID_CONFIG.size);
 
-  dim3 block_dim(16, 16);
-  dim3 grid_dim(compute::ceil_div(region.size.width, block_dim.x), compute::ceil_div(region.size.height, block_dim.y));
+  dim3 block_dim(8, 32);
+  dim3 grid_dim(compute::ceil_div(region.size.width, 4 * block_dim.x),
+                compute::ceil_div(region.size.height, block_dim.y));
 
   compute::smoothstep<<<grid_dim, block_dim>>>(heights, region.origin, brush_dab);
+
   CUDA_CHECK(cudaGetLastError());
   CUDA_CHECK(cudaDeviceSynchronize());
 }
@@ -53,4 +55,4 @@ void launch_marching_squares() {
 }
 } // namespace perf
 
-int main() { perf::launch_smoothstep(); }
+int main() { perf::launch_marching_squares(); }

@@ -1,11 +1,12 @@
 import numpy as np
 from pathlib import Path
+from noise import pnoise2
 
 import matplotlib
 matplotlib.use("Agg")  # Use non-interactive backend
 import matplotlib.pyplot as plt
 
-def plot(grid, segments):
+def plot(grid, segments = [], title = "image"):
     plt.figure(figsize=(10, 8))
 
     plt.imshow(grid, cmap="viridis", alpha=0.5)
@@ -20,7 +21,22 @@ def plot(grid, segments):
     plt.gca().invert_yaxis()
     plt.axis("equal")
     plt.tight_layout()
-    plt.savefig(Path(__file__).parent / "contour.png", dpi=150, bbox_inches="tight")
+    plt.savefig(Path(__file__).parent / f"{title}.png", dpi=150, bbox_inches="tight")
+
+
+def get_cell_type(top_left, top_right, bottom_right, bottom_left, threshold):
+    cell_type = 0
+    if top_left > threshold:
+        cell_type |= 8
+    if top_right > threshold:
+        cell_type |= 4
+    if bottom_right > threshold:
+        cell_type |= 2
+    if bottom_left > threshold:
+        cell_type |= 1
+
+    return cell_type
+
 
 
 def marching_squares(grid, threshold):
@@ -34,20 +50,22 @@ def marching_squares(grid, threshold):
             bottom_left = grid[i + 1, j]
             bottom_right = grid[i + 1, j + 1]
 
-            cell_type = 0
-            if top_left > threshold:
-                cell_type |= 8
-            if top_right > threshold:
-                cell_type |= 4
-            if bottom_right > threshold:
-                cell_type |= 2
-            if bottom_left > threshold:
-                cell_type |= 1
-
+            cell_type = get_cell_type(top_left, top_right, bottom_right, bottom_left, threshold)
             cell_segments = get_segments(cell_type, i, j, top_left, top_right, bottom_left, bottom_right, threshold)
+
             segments.extend(cell_segments)
 
     return segments
+
+def marching_squares_segment_types(grid, threshold):
+    cell_type = (grid[:-1, :-1] > threshold) * 8 + (grid[:-1, 1:] > threshold) * 4 + (grid[1:, 1:] > threshold) * 2 + (grid[1:, :-1] > threshold) * 1
+
+    types = {}
+    types["0"] = int(np.sum(np.isin(cell_type, [0, 15])))
+    types["1"] = int(np.sum(np.isin(cell_type, [1, 2, 3, 4, 6, 7, 8, 9, 11, 12, 13, 14])))
+    types["2"] = int(np.sum(np.isin(cell_type, [5, 10])))
+
+    return types
 
 
 def get_segments(cell_type, i, j, tl, tr, bl, br, threshold):
@@ -95,16 +113,62 @@ def get_segments(cell_type, i, j, tl, tr, bl, br, threshold):
 
     return segments
 
-if __name__ == "__main__":
-    height, width = 50, 80
-    threshold = 0.5
+def make_perlin_grid(width, heigth, scale):
+    grid = np.zeros((heigth, width))
 
-    x = np.linspace(-1, 1, width)
-    y = np.linspace(-1, 1, height)
+    for y in range(heigth):
+        for x in range(width):
+            grid[y, x] = pnoise2(
+                x / scale,
+                y / scale,
+                octaves=6,
+                persistence=0.5,
+                lacunarity=2.0,
+                repeatx=1024,
+                repeaty=1024,
+                base=0
+            )
+    
+    return grid
+
+def make_sinusoidal_grid(width, height, frequency, amplitude):
+    factor = min(height, width) - 1
+
+    x = np.arange(width) / factor
+    y = np.arange(height) / factor
+
     X, Y = np.meshgrid(x, y)
-    grid = 0.5 + 0.5 * np.sin(X * np.pi) * np.cos(Y * np.pi)
+    grid = amplitude * np.sin(X * np.pi * frequency) * np.cos(Y * np.pi * frequency)
 
-    segments = marching_squares(grid, threshold)
-    plot(grid, segments)
+    return grid
+
+if __name__ == "__main__":
+    width, height = 8000, 4000
+    frequency = 4
+    amplitude = 1
+    n_thresholds = 21
+    n_vertices = (width - 1) * (height - 1)
+
+    grid = make_perlin_grid(width, height, 80)
+    # grid = make_grid(width, height, frequency, amplitude)
+    thresholds = np.linspace(-amplitude, amplitude, n_thresholds + 2)
+
+    summed_types = {"0": 0, "1": 0, "2": 0}
+
+    for threshold in thresholds[1:-1]:
+        types = marching_squares_segment_types(grid, threshold)
+
+        summed_types["0"] += types["0"]
+        summed_types["1"] += types["1"]
+        summed_types["2"] += types["2"]
+
+    summed_types["0"] /= (n_thresholds * n_vertices)
+    summed_types["1"] /= (n_thresholds * n_vertices)
+    summed_types["2"] /= (n_thresholds * n_vertices)
+
+    print(summed_types)
+
+# {'0': 0.9986729294733568, '1': 0.0013270228897332324, '2': 4.7636909971633544e-08} sinus
+# {'0': 0.9910364350742166, '1': 0.008948316648632151, '2': 1.5248277151232576e-05} perlin
 
 

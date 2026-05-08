@@ -2,9 +2,10 @@
 
 #include "utils/config.h"
 
+#include <algorithm>
 #include <cmath>
 
-HeightGrid make_sinusoidal_height_grid(GridConfig const& config) {
+HeightGrid make_sinusoidal_height_grid(GridConfig const& config, float frequency) {
   std::vector<float> positions;
   std::vector<float> heights;
 
@@ -13,16 +14,18 @@ HeightGrid make_sinusoidal_height_grid(GridConfig const& config) {
 
   float offset = HeightGrid::HEIGHT_RANGE.midpoint();
   float scale = HeightGrid::HEIGHT_RANGE.span() / 4; // filling half of the range
+  float normalization_factor =
+      std::min(static_cast<float>(config.size.width), static_cast<float>(config.size.height)) - 1;
 
   for (int i = 0; i < config.size.height; ++i) {
     for (int j = 0; j < config.size.width; ++j) {
       float x = static_cast<float>(j);
       float y = static_cast<float>(i);
 
-      float x_norm = (x / static_cast<float>(config.size.width - 1)) * 2.0f - 1.0f;
-      float y_norm = (y / static_cast<float>(config.size.height - 1)) * 2.0f - 1.0f;
+      float x_norm = (x / normalization_factor);
+      float y_norm = (y / normalization_factor);
 
-      float height = offset + scale * sinf(x_norm * PI) * cosf(y_norm * PI);
+      float height = offset + scale * sinf(x_norm * PI * frequency) * cosf(y_norm * PI * frequency);
 
       positions.push_back(x);
       positions.push_back(y);

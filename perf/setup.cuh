@@ -43,12 +43,13 @@ struct GpuBuffer {
 
 GpuBuffer<float> make_gpu_buffer(HeightGrid const& height_grid);
 
-template <typename T>
-void benchmark(T&& func) {
+template <typename T, typename U>
+void benchmark(T&& func, U&& setup) {
   constexpr int warmup_iterations = 5;
   constexpr int benchmark_iterations = 100;
 
   for (int i = 0; i < warmup_iterations; ++i) {
+    setup();
     func();
   }
 
@@ -58,19 +59,22 @@ void benchmark(T&& func) {
   CUDA_CHECK(cudaEventCreate(&start));
   CUDA_CHECK(cudaEventCreate(&stop));
 
-  CUDA_CHECK(cudaEventRecord(start));
+  float total_ms = 0;
 
   for (int i = 0; i < benchmark_iterations; ++i) {
+    setup();
+
+    CUDA_CHECK(cudaEventRecord(start));
     func();
+    CUDA_CHECK(cudaEventRecord(stop));
+    CUDA_CHECK(cudaEventSynchronize(stop));
+
+    float ms;
+    CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
+    total_ms += ms;
   }
 
-  CUDA_CHECK(cudaEventRecord(stop));
-  CUDA_CHECK(cudaEventSynchronize(stop));
-
-  float ms;
-  CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
-
-  float avg_us = (ms / benchmark_iterations) * 1000;
+  float avg_us = (total_ms / benchmark_iterations) * 1000;
 
   std::cout << "Average runtime across " << benchmark_iterations << " iterations: " << std::fixed
             << std::setprecision(2) << avg_us << " µs" << std::endl;

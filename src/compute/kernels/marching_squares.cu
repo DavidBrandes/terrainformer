@@ -5,8 +5,10 @@
 
 namespace compute {
 
+constexpr float EPSILON = 1e-6f;
+
 __device__ float linear_interpolation_factor(float start, float end, float value) {
-  if (fabsf(end - start) < 1e-6f) {
+  if (fabsf(end - start) < EPSILON) {
     return 0.5f;
   }
 
@@ -32,12 +34,17 @@ __device__ int compute_type(float top_left, float top_right, float bottom_right,
   return type;
 }
 
+// This function computes only a correct saddle point for the cases 5 and 10
 __device__ bool compute_inside(float top_left, float top_right, float bottom_right, float bottom_left,
                                float threshold) {
-  // TODO check
-  float center = (top_left + top_right + bottom_right + bottom_left) / 4;
+  float denominator = top_left - top_right + bottom_right - bottom_left;
+  float u = (top_left - bottom_left) / denominator;
+  float v = (top_left - top_right) / denominator;
 
-  return center > threshold;
+  float saddle =
+      top_left * (1 - u) * (1 - v) + top_right * u * (1 - v) + bottom_right * u * v + bottom_left * (1 - u) * v;
+
+  return saddle > threshold;
 }
 
 __device__ int count_for_type(int type) {

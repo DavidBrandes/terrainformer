@@ -45,7 +45,7 @@ Result modify_height(std::shared_ptr<MappedGpuResources> resources, Range height
     return Result{.contourSegmentCount = 0};
   }
 
-  dim3 block_dim(16, 16);
+  dim3 block_dim(8, 32);
   dim3 grid_dim(ceil_div(region.size.width, 4 * block_dim.x), ceil_div(region.size.height, block_dim.y));
 
   smoothstep<<<grid_dim, block_dim>>>(ConstrainedGrid{heights, height_range}, region.origin, brush_dab);
