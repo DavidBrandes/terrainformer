@@ -1,7 +1,8 @@
 ## RTX 2000 Ada Generation Laptop GPU
 
-Peak bandwith: 14.5 TFLOPS
-Peak throughput: 256 GB/s
+Peak throughput: 14.5 TFLOPS
+Peak memory bandwidth: 256 GB/s
+Measured memory bandwidth: 222 GB/s
 Ridge Point: 56.6 FLOP/B
 Grid Size: 8000x4000
 SMs: 24
@@ -37,11 +38,11 @@ The next obvious optimization is to only avoid most of the unnecessary computati
 Since there are no cross dependencies for the vertices in our grid and we are mostly memory bound, we cannot do much except optimizing that access to memory. With our existing block configuration of $16\times16$ threads, the heights are already loaded and stored in a fairly coalesced way.
 though we could not attribute it to a specific metric.
 
-We observe a slight improvement in performance using a $32×8$ block configuration. Though we could not attribute it to a specific metric. With a last tweak we transpose this configuration to $8x\times32$ and add in vector loads along the rows. This gives us a nice square access of $32\times32$ elements per block. For specific brush radii, this should give us the minmal amount of blocks required to cover the entire clicks circle.
+We observe a slight improvement in performance using a $32×8$ block configuration. Though we could not attribute it to a specific metric. With a last tweak we transpose this configuration to $8\times32$ and add in vector loads along the rows. This gives us a nice square access of $32\times32$ elements per block. For specific brush radii, this should give us the minmal amount of blocks required to cover the entire clicks circle.
 
 This last configuration leaves us at a runtime of 541 µs. We observe a increased throughput of between 29% and 70% in L1, L2 and DRAM when compared to a unvectorized implementation. Memory is now busier and we utilize its bandwidth at 92%, which is as good as we could manage with this memory bound kernel. With this vectorized kernel we now also get more active warps on average. 
 
-Using `float4` loads and stores, we in a sense coarsened our kernel, giving each thread more work to do and keeping it busy while others might wait on their data to arrive. All of that while issuing fewer memory instructions than with an unvectorized implementation.
+Using `float4` loads and stores, we in a sense coarsened our kernel, giving each thread more work to do and keeping it busy while others might wait on their data to arrive. All of that while issuing fewer memory instructions than with an unvectorized implementation. This last modification gets us pretty close to what can actually be achieved with our GPU. Using the stated memory bandwidth of 256 GB/s, an optimal kernel would take 500 µs for our grid of $4000\times4000$ elements (considering both loads and stores).
 
 In theory we could also try to avoid the square root in the computation of the distance of a grid vertex to the click center. However simply leaving it out would give us only very small modifications at the circle boundaries. And even if we were ok with that, it would not give us much with our memory bound kernel. Having fewer steps to compute would simply leave the processors run idle more often.
 
@@ -59,12 +60,33 @@ As before, we start with a naive solution and will work our way towards a more p
 
 Let us take a look at the computational intensity of this kernel. Since the amount of computational steps, bytes loaded and stored differs with the amount of output segments, we present the different cases in the below table.
 
-|              | 0 Segments | 1 Segment | 2 Segments |
-| ------------ | ---------- | --------- | ---------- |
-| Bytes Loaded | 16         | 20        | 20         |
-| Bytes Stored | 0          | 20        | 36         |
-| FLOPs        | 0          | 8         | 38         |
-| OP/B         | 0          | 0.2       | 0.68       |
+|                  | 0 Segments | 1 Segment | 2 Segments |
+| ---------------- | ---------- | --------- | ---------- |
+| **Bytes Loaded** | 16         | 20        | 20         |
+| **Bytes Stored** | 0          | 20        | 36         |
+| **FLOPs**        | 0          | 8         | 38         |
+| **OP/B**         | 0          | 0.2       | 0.68       |
 We can already notice that in this naive implementation, the kernel is heavily memory bound, even more so than the previous smoothstep kernel. Further we see that the computational intensity differs by quite a bit across the various output conditions.
 
-// TODO average OP/B with percentual output type
+Next, we would like to get a feeling about the frequency, in which we can expect each of these 3 cases to arise. We launch the kernel on very regular sinusoidal grid and two variations of Perlin noise (one producing very turbulent and the other more gentle terrain) and the the contour thresholds vary in between the range of possible values. When counting the occurrence of each case, we notice a very skewed distribution which we show in the below table.
+
+|                            | 0 Segments | 1 Segment | 2 Segments |
+| -------------------------- | ---------- | --------- | ---------- |
+| **Sinusoidal**             | ~99.9%     | ~0.1%     | ~0%        |
+| **Gentle Perlin Noise**    | ~99.8%     | ~0.2%     | ~0%        |
+| **Turbulent Perlin Noise** | ~99.1%     | ~0.89%    | ~0.01%     |
+The output is quite revealing. For most $2\times2$ subgrids, we won't be doing any computation at all. Only rarely, a subgrid will actually produce an output segment and two will be produced even rarer. As a gird initialized with gentle Perlin noise appears to be the more interesting and realistic case, we will use it to continue with our profiling.
+
+#### Shared memory
+
+With all of this theory in mind, let us now start our optimization journey. An obvious first starting point could be to use shared memory instead of loading all the data from DRAM for each thread. With  computation happening in  $2\times2$ subgrids, most data is actually reused by other threads. Also the number of halo cells is rather small.
+
+Trying it in practice, we however observe a performance that is way worse than that of a naive implementation loading all data separately. While memory throughput is down across all layers, the use of shared memory now adds additional instructions (due to the branching logic when loading data) and more importantly, barriers to our kernel. We now observe way more warps stalling and doing nothing while they wait for their block's data to arrive. This is especially hurtful with the large number of threads that later end up doing no useful work anyways.
+
+
+// 2D -> 1D; thread, warp, block scan -> atomic write (both on full and slim kernel)
+// TODO try __restrict__, __ldg()
+// Warp shuffle atomic add
+// 0: 0.998288, 1: 0.001712, 2: 0.000000 across 21 thresholds
+// Threshold 0.000000, 0: 31853485, 1: 134516, 2: 0
+// 0: 0.995795, 1: 0.004205, 2: 0.000000

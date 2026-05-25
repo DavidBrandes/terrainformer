@@ -2,6 +2,9 @@
 
 #include "utils/types.h"
 
+#include <cstdint>
+#include <variant>
+
 struct WindowConfig {
   Size size;
   bool fullscreen;
@@ -10,26 +13,39 @@ struct WindowConfig {
 
 struct GridConfig {
   Size size;
-};
 
-struct MouseConfig {
-  int scrollSteps;
+  struct PerlinNoiseConfig {
+    std::uint32_t seed;
+    float frequency;
+    int octaves;
+    float persistence;
+  };
+
+  struct SinusoidalConfig {
+    float amplitude; // clamped to 1
+    float frequency;
+  };
+
+  using InitializationConfig = std::variant<PerlinNoiseConfig, SinusoidalConfig>;
+
+  InitializationConfig initialization;
 };
 
 struct ToolConfig {
   Range effectRadius;           // in grid units; limited by max(grid.width, grid.height)
-  float heightBrushSensitivity; // in the range [0, 1]; 0 has no and 1 max effect
+  float heightBrushSensitivity; // scaled to the range
+  int scrollSteps;
 };
 
 struct SceneConfig {
-  bool showVertices;
   bool preserveAspectRatio;
+  int contourCount;
+  float maxContourSegmentFraction; // max segments to display as fraction of absolute max
 };
 
 struct Config {
   WindowConfig window;
   GridConfig grid;
-  MouseConfig mouse;
   ToolConfig tool;
   SceneConfig scene;
 };

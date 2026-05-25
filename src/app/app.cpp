@@ -7,8 +7,8 @@
 Application::Application(Config const& config)
     : _window(Window{config}), _gui(GUI{_window}), _renderer(Renderer{}), _sceneController(SceneController{config}) {
 
-  HeightGrid height_grid = make_sinusoidal_height_grid(config.grid);
-  _scene = make_scene(height_grid);
+  HeightGrid height_grid = make_height_grid(config.grid);
+  _scene = make_scene(config, height_grid);
   _resources = compute::GpuResources::make(_scene);
 }
 
@@ -19,7 +19,7 @@ void Application::processInput(ApplicationState& state, ApplicationRequests& req
 }
 
 void Application::update(ApplicationState& state, ApplicationRequests& requests) {
-  _gui.prepare(state, requests);
+  _gui.prepare(requests);
   handleRequests(requests);
   _sceneController.update(_resources, state);
 }

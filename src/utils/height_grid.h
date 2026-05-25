@@ -14,4 +14,4 @@ struct HeightGrid {
   std::vector<float> heights;
 };
 
-HeightGrid make_sinusoidal_height_grid(GridConfig const& config, float frequency = 1);
+HeightGrid make_height_grid(GridConfig const& config);

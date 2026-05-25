@@ -1,8 +1,7 @@
 #pragma once
 
-#include "ui/window.h"
 #include "app/requests.h"
-#include "app/state.h"
+#include "ui/window.h"
 
 class GUI {
 public:
@@ -15,10 +14,9 @@ public:
   GUI(GUI&&) = delete;
   GUI& operator=(GUI&&) = delete;
 
-  void prepare(ApplicationState& state, ApplicationRequests& requests);
+  void prepare(ApplicationRequests& requests);
   void render();
 
 private:
-  void createButtonRow(ApplicationState& state);
   void createCloseButton(ApplicationRequests& requests);
 };

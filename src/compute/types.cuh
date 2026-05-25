@@ -16,20 +16,7 @@ struct Region {
   bool empty() const { return size.empty(); }
 };
 
-struct Point {
-  __device__ Point(float x_, float y_) : x(x_), y(y_) {}
-  __device__ Point(float x_, int y_) : x(x_), y(static_cast<float>(y_)) {}
-  __device__ Point(int x_, float y_) : x(static_cast<float>(x_)), y(y_) {}
-  __device__ Point(int x_, int y_) : x(static_cast<float>(x_)), y(static_cast<float>(y_)) {}
-  __device__ Point() = default;
-
-  float x;
-  float y;
-};
-
 struct Segment {
-  __device__ Segment(Point start_, Point end_) : start(start_), end(end_) {}
-
   Point start;
   Point end;
 };
@@ -37,6 +24,7 @@ struct Segment {
 struct Segments {
   Segment* segments;
   int* count;
+  int maxCount;
 
   __device__ Segment& operator[](int index) { return segments[index]; }
 };

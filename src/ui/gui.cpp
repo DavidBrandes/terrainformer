@@ -22,11 +22,10 @@ GUI::~GUI() {
   ImGui::DestroyContext();
 }
 
-void GUI::prepare(ApplicationState& state, ApplicationRequests& requests) {
+void GUI::prepare(ApplicationRequests& requests) {
   ImGui_ImplOpenGL3_NewFrame();
   ImGui_ImplGlfw_NewFrame();
   ImGui::NewFrame();
-  createButtonRow(state);
   createCloseButton(requests);
 }
 
@@ -35,49 +34,26 @@ void GUI::render() {
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
 
-void GUI::createButtonRow(ApplicationState& state) {
-  ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowBgAlpha(0.0f);
-
-  ImGui::Begin("Controls", nullptr,
-               ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
-                   ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoBackground);
-  auto tool_button = [&state](char const* label, ToolState::Tool tool) {
-    bool is_active = state.tool.activeTool == tool;
-    if (is_active) {
-      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 0.2f, 1.0f));
-    }
-    if (ImGui::Button(label)) {
-      state.tool.activeTool = is_active ? ToolState::Tool::NONE : tool;
-    }
-    if (is_active) {
-      ImGui::PopStyleColor();
-    }
-  };
-
-  tool_button("A", ToolState::Tool::A);
-  ImGui::Spacing();
-  tool_button("B", ToolState::Tool::B);
-  ImGui::Spacing();
-  tool_button("C", ToolState::Tool::C);
-
-  ImGui::End();
-}
-
 void GUI::createCloseButton(ApplicationRequests& requests) {
   ImGuiIO& io = ImGui::GetIO();
   float window_width = io.DisplaySize.x;
 
   ImGui::SetNextWindowPos(ImVec2(window_width - 50, 10), ImGuiCond_Always);
   ImGui::SetNextWindowBgAlpha(0.0f);
-
   ImGui::Begin("CloseButton", nullptr,
                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
                    ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoBackground);
 
-  if (ImGui::Button("X")) {
+  ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(5.0f, 2.0f));
+  ImGui::SetWindowFontScale(1.4f);
+
+  if (ImGui::Button("\xC3\x97")) {
     requests.shutdown = true;
   }
+
+  ImGui::SetWindowFontScale(1.0f);
+  ImGui::PopStyleVar(2);
 
   ImGui::End();
 }

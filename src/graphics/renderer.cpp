@@ -1,5 +1,8 @@
 #include "graphics/renderer.h"
 
+#include "graphics/layers/contour.h"
+
+#include <cstddef>
 #include <format>
 #include <fstream>
 #include <sstream>
@@ -10,7 +13,7 @@ namespace {
 std::string load_shader_source(char const* filepath) {
   std::ifstream file(filepath);
   if (!file.is_open()) {
-    throw std::runtime_error(std::format("Failed to open shader file: {}\n", filepath));
+    throw std::runtime_error(std::format("[load_shader_source]: Failed to open shader file: {}\n", filepath));
   }
 
   std::stringstream buffer;
@@ -28,7 +31,7 @@ GLuint compile_shader(GLuint type, char const* source) {
   if (!success) {
     char info_log[512];
     glGetShaderInfoLog(shader, 512, NULL, info_log);
-    throw std::runtime_error(std::format("Shader compilation failed:\n{}\n", info_log));
+    throw std::runtime_error(std::format("[compile_shader]: Shader compilation failed:\n{}\n", info_log));
   }
   return shader;
 }
@@ -50,7 +53,8 @@ GLuint create_shader_program(char const* vert_path, char const* frag_path, char 
   if (!success) {
     char info_log[512];
     glGetProgramInfoLog(program, 512, NULL, info_log);
-    throw std::runtime_error(std::format("{} shader program linking failed:\n{}\n", name, info_log));
+    throw std::runtime_error(
+        std::format("[create_shader_program]: {} shader program linking failed:\n{}\n", name, info_log));
   }
 
   glDeleteShader(vert_shader);
@@ -67,7 +71,6 @@ Renderer::Renderer() {
   _contourShaderProgram = create_shader_program(CONTOUR_VERT_SHADER_PATH, CONTOUR_FRAG_SHADER_PATH, "Contour");
   _mapShaderProgram = create_shader_program(MAP_VERT_SHADER_PATH, MAP_FRAG_SHADER_PATH, "Map");
   _circleShaderProgram = create_shader_program(CIRCLE_VERT_SHADER_PATH, CIRCLE_FRAG_SHADER_PATH, "Circle");
-  _vertexShaderProgram = create_shader_program(VERTEX_VERT_SHADER_PATH, VERTEX_FRAG_SHADER_PATH, "Vertex");
 
   initializeShaders();
 }
@@ -78,13 +81,14 @@ void Renderer::initializeShaders() {
   glUniform1f(min_value_loc, HeightGrid::HEIGHT_RANGE.min);
   GLint max_value_loc = glGetUniformLocation(_mapShaderProgram, "maxValue");
   glUniform1f(max_value_loc, HeightGrid::HEIGHT_RANGE.max);
+
+  _contourTLoc = glGetUniformLocation(_contourShaderProgram, "t");
 }
 
 Renderer::~Renderer() {
   glDeleteProgram(_contourShaderProgram);
   glDeleteProgram(_mapShaderProgram);
   glDeleteProgram(_circleShaderProgram);
-  glDeleteProgram(_vertexShaderProgram);
 }
 
 void Renderer::clear() { glClear(GL_COLOR_BUFFER_BIT); }
@@ -93,7 +97,15 @@ void Renderer::renderContours(ContourLayer const& contours) {
   glUseProgram(_contourShaderProgram);
   glLineWidth(CONTOUR_LINE_WIDTH);
   glBindVertexArray(contours.vao());
-  glDrawArrays(GL_LINES, 0, contours.segmentCount() * 2);
+
+  GLint last_offset = 0;
+
+  for (size_t i = 0; i < static_cast<size_t>(contours.count()); ++i) {
+    glUniform1f(_contourTLoc, contours.gradients().at(i));
+    // We need a x2 to get the actual vertex count
+    glDrawArrays(GL_LINES, last_offset, 2 * contours.offsets().at(i) - last_offset);
+    last_offset = 2 * contours.offsets().at(i);
+  }
 }
 
 void Renderer::renderMap(MapLayer const& map) {
@@ -121,19 +133,8 @@ void Renderer::renderCircle(CircleLayer const& circle) {
   glDrawArrays(GL_LINE_LOOP, 0, CircleLayer::CIRCLE_SEGMENTS);
 }
 
-void Renderer::renderVertices(VertexLayer const& vertices) {
-  if (!vertices.visible()) {
-    return;
-  }
-
-  glUseProgram(_vertexShaderProgram);
-  glPointSize(VERTEX_POINT_SIZE);
-  glBindVertexArray(vertices.vao());
-  glDrawArrays(GL_POINTS, 0, vertices.vertexCount());
-}
-
 void Renderer::setCropRegion(ApplicationState const& state) {
-  GLuint programs[] = {_contourShaderProgram, _mapShaderProgram, _circleShaderProgram, _vertexShaderProgram};
+  GLuint programs[] = {_contourShaderProgram, _mapShaderProgram, _circleShaderProgram};
   for (GLuint program : programs) {
     glUseProgram(program);
     GLint crop_min_loc = glGetUniformLocation(program, "cropMin");
@@ -150,5 +151,4 @@ void Renderer::render(std::shared_ptr<Scene> scene, ApplicationState const& stat
   renderMap(scene->map);
   renderContours(scene->contour);
   renderCircle(scene->circle);
-  renderVertices(scene->vertex);
 }

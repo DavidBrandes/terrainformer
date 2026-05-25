@@ -18,7 +18,9 @@ MappedGpuResources::MappedGpuResources(std::shared_ptr<GpuResources> parent) : _
 }
 
 Segments MappedGpuResources::contours() const {
-  return Segments{.segments = _contourSegments, .count = _parent->_contourSegmentCount};
+  return Segments{.segments = _contourSegments,
+                  .count = _parent->_contourSegmentCount,
+                  .maxCount = _parent->_scene->contour.maxSegments()};
 }
 
 Grid MappedGpuResources::heights() const { return Grid{.values = _heights, .size = _parent->_scene->map.size()}; }

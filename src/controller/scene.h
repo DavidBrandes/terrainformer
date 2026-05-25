@@ -5,6 +5,8 @@
 #include "utils/config.h"
 #include "utils/types.h"
 
+#include <vector>
+
 class SceneController {
 public:
   SceneController(Config const& config);
@@ -14,11 +16,11 @@ public:
 
 private:
   void updateCropState(ApplicationState& state);
-  void updateVertices(VertexLayer& vertex, ApplicationState& state);
 
   Size _gridSize;
   Range _effectRadius;
   float _radiusRange;
   float _heightBrushIntensity;
   SceneConfig _initialSceneConfig;
+  std::vector<float> _thresholds; // TODO define in const memory
 };

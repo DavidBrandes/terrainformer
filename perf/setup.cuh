@@ -6,6 +6,8 @@
 #include <iomanip>
 #include <iostream>
 
+#include "compute/types.cuh"
+
 namespace perf {
 
 template <typename T>
@@ -35,6 +37,13 @@ struct GpuBuffer {
     }
 
     return *this;
+  }
+
+  std::vector<T> toVector() const {
+    std::vector<T> vec(size);
+    CUDA_CHECK(cudaMemcpy(vec.data(), data, size * sizeof(T), cudaMemcpyDeviceToHost));
+
+    return vec;
   }
 
   T* data;
@@ -80,8 +89,10 @@ void benchmark(T&& func, U&& setup) {
             << std::setprecision(2) << avg_us << " µs" << std::endl;
 }
 
-Point point_from_normalized(GridConfig grid_config, float x_normalized = 0.5f, float y_normalized = 0.5f);
-float radius_from_normalized(GridConfig grid_config, float radius_normalized = 0.5f);
+Point point_from_normalized(Size size, float x_normalized = 0.5f, float y_normalized = 0.5f);
+float radius_from_normalized(Size size, float radius_normalized = 0.5f);
 BrushDab make_brush_dab(Point center, float radius, float intensity = 0.01f);
+
+void plot(std::vector<float> const& heights, Size size, std::vector<compute::Segment> const& segments = {});
 
 } // namespace perf

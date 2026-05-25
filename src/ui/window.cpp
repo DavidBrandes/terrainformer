@@ -47,38 +47,25 @@ GLFWmonitor* get_current_monitor(GLFWwindow* window) {
 
 void handle_keyboard_input(GLFWwindow* window, ApplicationState& state, ApplicationRequests& requests) {
 
-  if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) {
-    state.tool.activeTool = ToolState::Tool::NONE;
-  }
-
-  if (glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS) {
-    state.tool.activeTool = ToolState::Tool::A;
-  }
-  if (glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS) {
-    state.tool.activeTool = ToolState::Tool::B;
-  }
-  if (glfwGetKey(window, GLFW_KEY_3) == GLFW_PRESS) {
-    state.tool.activeTool = ToolState::Tool::C;
-  }
-
   if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {
     requests.shutdown = true;
   }
 
   // We need to debounce the press to only detect it once
+  static bool s_key_was_pressed = false;
+  bool s_key_is_pressed = glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS;
+  if (s_key_is_pressed && !s_key_was_pressed) {
+    state.tool.activeTool =
+        (state.tool.activeTool == ToolState::Tool::SHIFT) ? ToolState::Tool::NONE : ToolState::Tool::SHIFT;
+  }
+  s_key_was_pressed = s_key_is_pressed;
+
   static bool f_key_was_pressed = false;
   bool f_key_is_pressed = glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS;
   if (f_key_is_pressed && !f_key_was_pressed) {
     requests.toggleFullscreen = true;
   }
   f_key_was_pressed = f_key_is_pressed;
-
-  static bool v_key_was_pressed = false;
-  bool v_key_is_pressed = glfwGetKey(window, GLFW_KEY_V) == GLFW_PRESS;
-  if (v_key_is_pressed && !v_key_was_pressed) {
-    state.scene.showVertices = !state.scene.showVertices;
-  }
-  v_key_was_pressed = v_key_is_pressed;
 
   static bool c_key_was_pressed = false;
   bool c_key_is_pressed = glfwGetKey(window, GLFW_KEY_C) == GLFW_PRESS;
@@ -128,11 +115,11 @@ void Window::scrollCallback(GLFWwindow* window, double, double yoffset) {
 }
 
 Window::Window(Config const& config) : _isFullscreen(config.window.fullscreen), _defaultSize(config.window.size) {
-  _scrollInterval = MouseState::SCROLL.span() / static_cast<float>(config.mouse.scrollSteps - 1);
-  _scroll = MouseState::SCROLL.min + static_cast<float>(config.mouse.scrollSteps / 2) * _scrollInterval;
+  _scrollInterval = MouseState::SCROLL.span() / static_cast<float>(config.tool.scrollSteps - 1);
+  _scroll = MouseState::SCROLL.min + static_cast<float>(config.tool.scrollSteps / 2) * _scrollInterval;
 
   if (!glfwInit()) {
-    throw std::runtime_error("Failed to initialize GLFW");
+    throw std::runtime_error("[Window::Window]: Failed to initialize GLFW");
   }
 
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
@@ -151,7 +138,7 @@ Window::Window(Config const& config) : _isFullscreen(config.window.fullscreen), 
   _window = glfwCreateWindow(width, height, WINDOW_TITLE, monitor, nullptr);
   if (!_window) {
     glfwTerminate();
-    throw std::runtime_error("Failed to create GLFW window");
+    throw std::runtime_error("[Window::Window]: Failed to create GLFW window");
   }
 
   glfwMakeContextCurrent(_window);
@@ -161,7 +148,7 @@ Window::Window(Config const& config) : _isFullscreen(config.window.fullscreen), 
 
   if (!gladLoadGL(glfwGetProcAddress)) {
     glfwTerminate();
-    throw std::runtime_error("Failed to initialize GLAD");
+    throw std::runtime_error("[Window::Window]: Failed to initialize GLAD");
   }
 }
 

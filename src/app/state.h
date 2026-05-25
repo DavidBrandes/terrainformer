@@ -21,14 +21,13 @@ struct CropState {
 };
 
 struct ToolState {
-  enum class Tool { NONE, A, B, C };
+  enum class Tool { NONE, SHIFT };
 
-  Tool activeTool = Tool::NONE;
+  Tool activeTool = Tool::SHIFT;
 };
 
 struct SceneState {
   bool preserveAspectRatio;
-  bool showVertices;
 };
 
 struct ApplicationState {

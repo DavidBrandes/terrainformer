@@ -34,19 +34,27 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(glad)
 glad_add_library(glad_gl STATIC REPRODUCIBLE LOADER API gl:core=3.3)
 
-FetchContent_Declare(
-    imgui
-    GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG v1.92.5
-)
-FetchContent_MakeAvailable(imgui)
 
 FetchContent_Declare(
     tomlplusplus
     GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
     GIT_TAG v3.4.0
-)
+    )
 FetchContent_MakeAvailable(tomlplusplus)
+
+FetchContent_Declare(
+    PerlinNoise
+    GIT_REPOSITORY https://github.com/Reputeless/PerlinNoise.git
+    GIT_TAG        v3.0.0
+)
+FetchContent_MakeAvailable(PerlinNoise)
+
+FetchContent_Declare(
+    imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG v1.92.5
+    )
+FetchContent_MakeAvailable(imgui)
 
 add_library(imgui STATIC
     ${imgui_SOURCE_DIR}/imgui.cpp
@@ -74,7 +82,6 @@ set(LIB_SOURCES
     src/graphics/layers/circle.cpp
     src/graphics/layers/contour.cpp
     src/graphics/layers/map.cpp
-    src/graphics/layers/vertex.cpp
     src/utils/height_grid.cpp
     src/utils/config.cpp
     src/compute/compute.cu
@@ -89,10 +96,11 @@ add_library(terrainformer_lib STATIC ${LIB_SOURCES})
 
 target_link_libraries(terrainformer_lib
     PUBLIC
-    OpenGL::GL
-    CUDA::cudart
-    glfw
     glad_gl
+    CUDA::cudart
+    PRIVATE
+    OpenGL::GL
+    glfw
     imgui
     tomlplusplus::tomlplusplus
 )
@@ -100,6 +108,8 @@ target_link_libraries(terrainformer_lib
 target_include_directories(terrainformer_lib
     PUBLIC
     ${CMAKE_SOURCE_DIR}/src
+    PRIVATE
+    ${perlinnoise_SOURCE_DIR}
 )
 
 target_compile_definitions(terrainformer_lib
@@ -108,14 +118,11 @@ target_compile_definitions(terrainformer_lib
     SHADERS_DIR="${CMAKE_SOURCE_DIR}/src/graphics/shaders"
 )
 
-target_compile_options(terrainformer_lib PRIVATE
+target_compile_options(terrainformer_lib
+    PRIVATE
+    -isystem ${perlinnoise_SOURCE_DIR}
     $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -Wpedantic -Wsign-compare -Wconversion>
-)
-
-target_compile_options(terrainformer_lib PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:
-        -Xcompiler=-Wall,-Wextra,-Wsign-compare
-    >
+    $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra,-Wsign-compare>
 )
 
 set_target_properties(terrainformer_lib PROPERTIES

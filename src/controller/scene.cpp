@@ -7,8 +7,22 @@
 #include "utils/types.h"
 
 #include <algorithm>
+#include <vector>
 
-constexpr float CONTOUR_THRESHOLD = 0.0f; // TODO define somehow else
+namespace {
+std::vector<float> compute_thresholds(Config const& config) {
+  std::vector<float> thresholds;
+
+  for (int i = 0; i < config.scene.contourCount; ++i) {
+    // We do not want any thresholds at the bounds
+    float t = static_cast<float>(i + 1) / static_cast<float>(config.scene.contourCount + 1);
+    float threshold = HeightGrid::HEIGHT_RANGE.min + t * HeightGrid::HEIGHT_RANGE.span();
+    thresholds.push_back(threshold);
+  }
+
+  return thresholds;
+}
+} // namespace
 
 SceneController::SceneController(Config const& config)
     : _gridSize(config.grid.size), _effectRadius(config.tool.effectRadius),
@@ -18,11 +32,12 @@ SceneController::SceneController(Config const& config)
       std::min({static_cast<float>(_gridSize.width), static_cast<float>(_gridSize.height), _effectRadius.max});
   float max_radius = static_cast<float>(min_grid_dim - 1) / 2;
   _radiusRange = std::min(max_radius, _effectRadius.max) - _effectRadius.min;
+  _thresholds = compute_thresholds(config);
 }
 
 void SceneController::updateCropState(ApplicationState& state) {
-  state.crop.min = Point{0, 0};
-  state.crop.max = Point{_gridSize.width - 1, _gridSize.height - 1};
+  state.crop.min = Point{.x = 0, .y = 0};
+  state.crop.max = Point{.x = static_cast<float>(_gridSize.width - 1), .y = static_cast<float>(_gridSize.height - 1)};
 
   if (!state.scene.preserveAspectRatio) {
     return;
@@ -55,14 +70,9 @@ void SceneController::updateCropState(ApplicationState& state) {
   }
 }
 
-void SceneController::updateVertices(VertexLayer& vertex, ApplicationState& state) {
-  vertex.update(state.scene.showVertices);
-}
-
 // TODO split into smaller chunks
 void SceneController::update(std::shared_ptr<compute::GpuResources> resources, ApplicationState& state) {
   updateCropState(state);
-  updateVertices(resources->scene()->vertex, state);
 
   if (state.tool.activeTool == ToolState::Tool::NONE) {
     resources->scene()->circle.update(CircleLayer::Parameters{.circle = Circle{}, .visible = false});
@@ -88,7 +98,7 @@ void SceneController::update(std::shared_ptr<compute::GpuResources> resources, A
   float radius = _effectRadius.min + scroll_normalized * _radiusRange;
 
   resources->scene()->circle.update(CircleLayer::Parameters{
-      .circle = {Point{x, y}, radius},
+      .circle = {Point{.x = x, .y = y}, radius},
       .visible = true,
   });
 
@@ -96,21 +106,24 @@ void SceneController::update(std::shared_ptr<compute::GpuResources> resources, A
     return;
   }
 
-  if (state.tool.activeTool == ToolState::Tool::A) {
+  if (state.tool.activeTool == ToolState::Tool::SHIFT) {
     float intensity = state.mouse.button == MouseState::Button::LEFT ? _heightBrushIntensity : -_heightBrushIntensity;
-    BrushDab brush_dab{.circle = {Point{x, y}, radius}, .intensity = intensity};
+    BrushDab brush_dab{.circle = {Point{.x = x, .y = y}, radius}, .intensity = intensity};
 
-    compute::Result result = modify_height(resources->map(), HeightGrid::HEIGHT_RANGE, brush_dab, CONTOUR_THRESHOLD);
+    compute::Result result = modify_height(resources->map(), HeightGrid::HEIGHT_RANGE, brush_dab, _thresholds);
 
-    resources->scene()->contour.update(result.contourSegmentCount);
+    if (result.modified) {
+      resources->scene()->contour.update(std::move(result.contourOffsets));
+    }
   }
 }
 
 void SceneController::initialize(std::shared_ptr<compute::GpuResources> resources, ApplicationState& state) {
   state.scene.preserveAspectRatio = _initialSceneConfig.preserveAspectRatio;
-  state.scene.showVertices = _initialSceneConfig.showVertices;
 
-  compute::Result result = compute_contour(resources->map(), CONTOUR_THRESHOLD);
+  compute::Result result = compute_contour(resources->map(), _thresholds);
 
-  resources->scene()->contour.update(result.contourSegmentCount);
+  if (result.modified) {
+    resources->scene()->contour.update(std::move(result.contourOffsets));
+  }
 }

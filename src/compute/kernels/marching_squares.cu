@@ -89,14 +89,18 @@ __global__ void marching_squares(Grid heights, Segments contours, float threshol
   bool inside = compute_inside(top_left, top_right, bottom_right, bottom_left, threshold);
   int type = compute_type(top_left, top_right, bottom_right, bottom_left, threshold);
 
-  Point top{col + linear_interpolation_factor(top_left, top_right, threshold), row};
-  Point right{col + 1, row + linear_interpolation_factor(top_right, bottom_right, threshold)};
-  Point bottom{col + linear_interpolation_factor(bottom_left, bottom_right, threshold), row + 1};
-  Point left{col, row + linear_interpolation_factor(top_left, bottom_left, threshold)};
+  Point top{.x = col + linear_interpolation_factor(top_left, top_right, threshold), .y = (float)row};
+  Point right{.x = (float)(col + 1), .y = row + linear_interpolation_factor(top_right, bottom_right, threshold)};
+  Point bottom{.x = col + linear_interpolation_factor(bottom_left, bottom_right, threshold), .y = (float)(row + 1)};
+  Point left{.x = (float)col, .y = row + linear_interpolation_factor(top_left, bottom_left, threshold)};
 
   int local_count = count_for_type(type);
   cuda::atomic_ref<int, cuda::thread_scope_device> segment_count_ref(*contours.count);
   int global_count = segment_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
+
+  if (local_count + global_count > contours.maxCount) {
+    return;
+  }
 
   switch (type) {
   case 0:
@@ -105,51 +109,51 @@ __global__ void marching_squares(Grid heights, Segments contours, float threshol
 
   case 1:
   case 14:
-    contours[global_count] = Segment{left, bottom};
+    contours[global_count] = Segment{.start = left, .end = bottom};
     break;
 
   case 2:
   case 13:
-    contours[global_count] = Segment{bottom, right};
+    contours[global_count] = Segment{.start = bottom, .end = right};
     break;
 
   case 3:
   case 12:
-    contours[global_count] = Segment{left, right};
+    contours[global_count] = Segment{.start = left, .end = right};
     break;
 
   case 4:
   case 11:
-    contours[global_count] = Segment{top, right};
+    contours[global_count] = Segment{.start = top, .end = right};
     break;
 
   case 5:
     if (inside) {
-      contours[global_count] = Segment{left, top};
-      contours[global_count + 1] = Segment{bottom, right};
+      contours[global_count] = Segment{.start = left, .end = top};
+      contours[global_count + 1] = Segment{.start = bottom, .end = right};
     } else {
-      contours[global_count] = Segment{left, bottom};
-      contours[global_count + 1] = Segment{top, right};
+      contours[global_count] = Segment{.start = left, .end = bottom};
+      contours[global_count + 1] = Segment{.start = top, .end = right};
     }
     break;
 
   case 6:
   case 9:
-    contours[global_count] = Segment{top, bottom};
+    contours[global_count] = Segment{.start = top, .end = bottom};
     break;
 
   case 7:
   case 8:
-    contours[global_count] = Segment{left, top};
+    contours[global_count] = Segment{.start = left, .end = top};
     break;
 
   case 10:
     if (inside) {
-      contours[global_count] = Segment{top, right};
-      contours[global_count + 1] = Segment{left, bottom};
+      contours[global_count] = Segment{.start = top, .end = right};
+      contours[global_count + 1] = Segment{.start = left, .end = bottom};
     } else {
-      contours[global_count] = Segment{top, left};
-      contours[global_count + 1] = Segment{right, bottom};
+      contours[global_count] = Segment{.start = top, .end = left};
+      contours[global_count + 1] = Segment{.start = right, .end = bottom};
     }
     break;
 
