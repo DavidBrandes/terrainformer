@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <format>
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -31,7 +32,8 @@ BrushDab make_brush_dab(Point center, float radius, float intensity) {
   return BrushDab{.circle = circle, .intensity = intensity};
 }
 
-void plot(std::vector<float> const& heights, Size size, std::vector<compute::Segment> const& segments) {
+void plot(std::vector<float> const& heights, Size size, std::vector<compute::Segment> const& segments,
+          std::string_view title) {
   cv::Mat gray(size.height, size.width, CV_32FC1, const_cast<float*>(heights.data()));
   cv::Mat gray8, img;
   cv::normalize(gray, gray8, 0, 255, cv::NORM_MINMAX, CV_8UC1);
@@ -40,6 +42,6 @@ void plot(std::vector<float> const& heights, Size size, std::vector<compute::Seg
   for (auto const& seg : segments)
     cv::line(img, cv::Point2f{seg.start.x, seg.start.y}, cv::Point2f{seg.end.x, seg.end.y}, cv::Scalar(0, 0, 0));
 
-  cv::imwrite("plot.png", img);
+  cv::imwrite(std::format("{}.png", title), img);
 }
 } // namespace perf

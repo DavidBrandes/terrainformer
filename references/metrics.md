@@ -64,3 +64,8 @@ Stands for Local  Global throttle and happens when the memory pipeline of a SM i
 When a memory instruction was issued, how many cycles were spent stalling before the warp was able to continue
 #### Stall MIO Throttle
 Stands for Memory Input/Output and sits between the SM load/store pipe and the rest of the memory hierachry (L1, L2, etc..). Indicates that the units internal queue was full.
+
+
+Compute capability → what the GPU can do (hardware feature set)
+Driver version → how software communicates and runs on that GPU
+CUDA toolkit → how code is compiled for that ecosystem

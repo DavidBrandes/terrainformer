@@ -22,6 +22,26 @@ std::vector<float> compute_thresholds(Config const& config) {
 
   return thresholds;
 }
+
+bool is_active(ApplicationState const& state) {
+  if (state.tool.activeTool == ToolState::Tool::NONE) {
+    return false;
+  }
+
+  if (state.mouse.pixel.x < 0 || static_cast<float>(state.window.size.width) < state.mouse.pixel.x) {
+    return false;
+  }
+
+  if (state.mouse.pixel.y < 0 || static_cast<float>(state.window.size.height) < state.mouse.pixel.y) {
+    return false;
+  }
+
+  return true;
+}
+
+void update_circle_layer(std::shared_ptr<compute::GpuResources>& resources, Circle circle, bool visible) {
+  resources->scene()->circle.update(CircleLayer::Parameters{.circle = circle, .visible = visible});
+}
 } // namespace
 
 SceneController::SceneController(Config const& config)
@@ -35,7 +55,7 @@ SceneController::SceneController(Config const& config)
   _thresholds = compute_thresholds(config);
 }
 
-void SceneController::updateCropState(ApplicationState& state) {
+void SceneController::updateCropState(ApplicationState& state) const {
   state.crop.min = Point{.x = 0, .y = 0};
   state.crop.max = Point{.x = static_cast<float>(_gridSize.width - 1), .y = static_cast<float>(_gridSize.height - 1)};
 
@@ -70,25 +90,7 @@ void SceneController::updateCropState(ApplicationState& state) {
   }
 }
 
-// TODO split into smaller chunks
-void SceneController::update(std::shared_ptr<compute::GpuResources> resources, ApplicationState& state) {
-  updateCropState(state);
-
-  if (state.tool.activeTool == ToolState::Tool::NONE) {
-    resources->scene()->circle.update(CircleLayer::Parameters{.circle = Circle{}, .visible = false});
-    return;
-  }
-
-  if (state.mouse.pixel.x < 0 || static_cast<float>(state.window.size.width) < state.mouse.pixel.x) {
-    resources->scene()->circle.update(CircleLayer::Parameters{.circle = Circle{}, .visible = false});
-    return;
-  }
-
-  if (state.mouse.pixel.y < 0 || static_cast<float>(state.window.size.height) < state.mouse.pixel.y) {
-    resources->scene()->circle.update(CircleLayer::Parameters{.circle = Circle{}, .visible = false});
-    return;
-  }
-
+Circle SceneController::computeEffectCircle(ApplicationState const& state) const {
   float x =
       (state.mouse.pixel.x / static_cast<float>(state.window.size.width)) * static_cast<float>(_gridSize.width - 1);
   float y =
@@ -97,24 +99,39 @@ void SceneController::update(std::shared_ptr<compute::GpuResources> resources, A
   float scroll_normalized = (state.mouse.scroll - MouseState::SCROLL.min) / MouseState::SCROLL.span();
   float radius = _effectRadius.min + scroll_normalized * _radiusRange;
 
-  resources->scene()->circle.update(CircleLayer::Parameters{
-      .circle = {Point{.x = x, .y = y}, radius},
-      .visible = true,
-  });
+  return Circle{.center = Point{.x = x, .y = y}, .radius = radius};
+}
+
+void SceneController::shift(std::shared_ptr<compute::GpuResources>& resources, ApplicationState const& state,
+                            Circle effect_circle) const {
+  float intensity = state.mouse.button == MouseState::Button::LEFT ? _heightBrushIntensity : -_heightBrushIntensity;
+  BrushDab brush_dab{.circle = effect_circle, .intensity = intensity};
+
+  compute::Result result = modify_height(resources->map(), HeightGrid::HEIGHT_RANGE, brush_dab, _thresholds);
+
+  if (result.modified) {
+    resources->scene()->contour.update(std::move(result.contourOffsets));
+  }
+}
+
+void SceneController::update(std::shared_ptr<compute::GpuResources> resources, ApplicationState& state) {
+  updateCropState(state);
+
+  if (!is_active(state)) {
+    update_circle_layer(resources, Circle{}, false);
+    return;
+  }
+
+  Circle effect_circle = computeEffectCircle(state);
+  update_circle_layer(resources, effect_circle, true);
 
   if (state.mouse.button == MouseState::Button::NONE) {
     return;
   }
 
   if (state.tool.activeTool == ToolState::Tool::SHIFT) {
-    float intensity = state.mouse.button == MouseState::Button::LEFT ? _heightBrushIntensity : -_heightBrushIntensity;
-    BrushDab brush_dab{.circle = {Point{.x = x, .y = y}, radius}, .intensity = intensity};
-
-    compute::Result result = modify_height(resources->map(), HeightGrid::HEIGHT_RANGE, brush_dab, _thresholds);
-
-    if (result.modified) {
-      resources->scene()->contour.update(std::move(result.contourOffsets));
-    }
+    shift(resources, state, effect_circle);
+    return;
   }
 }
 

@@ -1,5 +1,4 @@
 #include <cmath>
-#include <cub/cub.cuh>
 #include <cuda/atomic>
 
 #include "kernel.cuh"
@@ -74,11 +73,145 @@ __device__ int count_for_type(int type) {
   }
 }
 
-__global__ void marching_squares(compute::Grid heights, compute::Segments contours, float threshold) {
+// __global__ void marching_squares(compute::Grid heights, compute::Segment* contours, int* count, int max_count,
+//                                  float threshold) {
+//   int col = blockIdx.x * blockDim.x + threadIdx.x;
+//   int row = blockIdx.y * blockDim.y + threadIdx.y;
+
+//   if (col >= heights.size.width - 1 || row >= heights.size.height - 1) {
+//     return;
+//   }
+
+//   float top_left = heights[row][col];
+//   float top_right = heights[row][col + 1];
+//   float bottom_right = heights[row + 1][col + 1];
+//   float bottom_left = heights[row + 1][col];
+
+//   bool inside = compute_inside(top_left, top_right, bottom_right, bottom_left, threshold);
+//   int type = compute_type(top_left, top_right, bottom_right, bottom_left, threshold);
+
+//   Point top{.x = col + linear_interpolation_factor(top_left, top_right, threshold), .y = (float)row};
+//   Point right{.x = (float)(col + 1), .y = row + linear_interpolation_factor(top_right, bottom_right, threshold)};
+//   Point bottom{.x = col + linear_interpolation_factor(bottom_left, bottom_right, threshold), .y = (float)(row + 1)};
+//   Point left{.x = (float)col, .y = row + linear_interpolation_factor(top_left, bottom_left, threshold)};
+
+//   int local_count = count_for_type(type);
+//   cuda::atomic_ref<int, cuda::thread_scope_device> segment_count_ref(*count);
+//   int global_count = segment_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
+
+//   if (local_count + global_count > max_count) {
+//     return;
+//   }
+
+//   switch (type) {
+//   case 0:
+//   case 15:
+//     break;
+
+//   case 1:
+//   case 14:
+//     contours[global_count] = compute::Segment{.start = left, .end = bottom};
+//     break;
+
+//   case 2:
+//   case 13:
+//     contours[global_count] = compute::Segment{.start = bottom, .end = right};
+//     break;
+
+//   case 3:
+//   case 12:
+//     contours[global_count] = compute::Segment{.start = left, .end = right};
+//     break;
+
+//   case 4:
+//   case 11:
+//     contours[global_count] = compute::Segment{.start = top, .end = right};
+//     break;
+
+//   case 5:
+//     if (inside) {
+//       contours[global_count] = compute::Segment{.start = left, .end = top};
+//       contours[global_count + 1] = compute::Segment{.start = bottom, .end = right};
+//     } else {
+//       contours[global_count] = compute::Segment{.start = left, .end = bottom};
+//       contours[global_count + 1] = compute::Segment{.start = top, .end = right};
+//     }
+//     break;
+
+//   case 6:
+//   case 9:
+//     contours[global_count] = compute::Segment{.start = top, .end = bottom};
+//     break;
+
+//   case 7:
+//   case 8:
+//     contours[global_count] = compute::Segment{.start = left, .end = top};
+//     break;
+
+//   case 10:
+//     if (inside) {
+//       contours[global_count] = compute::Segment{.start = top, .end = right};
+//       contours[global_count + 1] = compute::Segment{.start = left, .end = bottom};
+//     } else {
+//       contours[global_count] = compute::Segment{.start = top, .end = left};
+//       contours[global_count + 1] = compute::Segment{.start = right, .end = bottom};
+//     }
+//     break;
+
+//   default:
+//     break;
+//   }
+// }
+
+__global__ void marching_squares_part_1(compute::Grid heights, int* count, int max_count, int2* tmp, float threshold) {
   int col = blockIdx.x * blockDim.x + threadIdx.x;
   int row = blockIdx.y * blockDim.y + threadIdx.y;
 
   if (col >= heights.size.width - 1 || row >= heights.size.height - 1) {
+    return;
+  }
+
+  float top_left = heights[row][col];
+  float top_right = heights[row][col + 1];
+  float bottom_right = heights[row + 1][col + 1];
+  float bottom_left = heights[row + 1][col];
+
+  int type = compute_type(top_left, top_right, bottom_right, bottom_left, threshold);
+  int local_count = count_for_type(type);
+
+  if (local_count == 0) {
+    return;
+  }
+
+  cuda::atomic_ref<int, cuda::thread_scope_device> segment_count_ref(*count);
+  int global_count = segment_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
+
+  if (local_count + global_count > max_count) {
+    return;
+  }
+
+  if (local_count == 1) {
+    tmp[global_count] = int2(col, row);
+  }
+
+  if (local_count == 2) {
+    tmp[global_count + 1] = int2(-1, -1);
+  }
+}
+
+__global__ void marching_squares_part_2(compute::Grid heights, compute::Segment* contours, int count, int2* tmp,
+                                        float threshold) {
+  int index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index > count) {
+    return;
+  }
+
+  int2 value = tmp[index];
+
+  int col = value.x;
+  int row = value.y;
+
+  if (col == -1) {
     return;
   }
 
@@ -94,10 +227,6 @@ __global__ void marching_squares(compute::Grid heights, compute::Segments contou
   Point right{.x = (float)(col + 1), .y = row + linear_interpolation_factor(top_right, bottom_right, threshold)};
   Point bottom{.x = col + linear_interpolation_factor(bottom_left, bottom_right, threshold), .y = (float)(row + 1)};
   Point left{.x = (float)col, .y = row + linear_interpolation_factor(top_left, bottom_left, threshold)};
-
-  int local_count = count_for_type(type);
-  cuda::atomic_ref<int, cuda::thread_scope_device> segment_count_ref(*contours.count);
-  int global_count = segment_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
 
   switch (type) {
   case 0:
@@ -106,51 +235,51 @@ __global__ void marching_squares(compute::Grid heights, compute::Segments contou
 
   case 1:
   case 14:
-    contours[global_count] = compute::Segment{.start = left, .end = bottom};
+    contours[index] = compute::Segment{.start = left, .end = bottom};
     break;
 
   case 2:
   case 13:
-    contours[global_count] = compute::Segment{.start = bottom, .end = right};
+    contours[index] = compute::Segment{.start = bottom, .end = right};
     break;
 
   case 3:
   case 12:
-    contours[global_count] = compute::Segment{.start = left, .end = right};
+    contours[index] = compute::Segment{.start = left, .end = right};
     break;
 
   case 4:
   case 11:
-    contours[global_count] = compute::Segment{.start = top, .end = right};
+    contours[index] = compute::Segment{.start = top, .end = right};
     break;
 
   case 5:
     if (inside) {
-      contours[global_count] = compute::Segment{.start = left, .end = top};
-      contours[global_count + 1] = compute::Segment{.start = bottom, .end = right};
+      contours[index] = compute::Segment{.start = left, .end = top};
+      contours[index + 1] = compute::Segment{.start = bottom, .end = right};
     } else {
-      contours[global_count] = compute::Segment{.start = left, .end = bottom};
-      contours[global_count + 1] = compute::Segment{.start = top, .end = right};
+      contours[index] = compute::Segment{.start = left, .end = bottom};
+      contours[index + 1] = compute::Segment{.start = top, .end = right};
     }
     break;
 
   case 6:
   case 9:
-    contours[global_count] = compute::Segment{.start = top, .end = bottom};
+    contours[index] = compute::Segment{.start = top, .end = bottom};
     break;
 
   case 7:
   case 8:
-    contours[global_count] = compute::Segment{.start = left, .end = top};
+    contours[index] = compute::Segment{.start = left, .end = top};
     break;
 
   case 10:
     if (inside) {
-      contours[global_count] = compute::Segment{.start = top, .end = right};
-      contours[global_count + 1] = compute::Segment{.start = left, .end = bottom};
+      contours[index] = compute::Segment{.start = top, .end = right};
+      contours[index + 1] = compute::Segment{.start = left, .end = bottom};
     } else {
-      contours[global_count] = compute::Segment{.start = top, .end = left};
-      contours[global_count + 1] = compute::Segment{.start = right, .end = bottom};
+      contours[index] = compute::Segment{.start = top, .end = left};
+      contours[index + 1] = compute::Segment{.start = right, .end = bottom};
     }
     break;
 
@@ -159,116 +288,238 @@ __global__ void marching_squares(compute::Grid heights, compute::Segments contou
   }
 }
 
-__global__ void marching_squares_types(compute::Grid heights, int* types, int* counter, float threshold) {
-  int col = blockIdx.x * blockDim.x + threadIdx.x;
-  int row = blockIdx.y * blockDim.y + threadIdx.y;
+// __global__ void marching_squares_part_2(compute::Grid heights, compute::Segment* contours, int* count, int2* tmp,
+//                                         float threshold) {
+//   int index = blockIdx.x * blockDim.x + threadIdx.x;
+//   if (index > *count) {
+//     return;
+//   }
 
-  if (col >= heights.size.width - 1 || row >= heights.size.height - 1) {
-    return;
-  }
+//   int2 value = tmp[index];
 
-  float top_left = heights[row][col];
-  float top_right = heights[row][col + 1];
-  float bottom_right = heights[row + 1][col + 1];
-  float bottom_left = heights[row + 1][col];
+//   int col = value.x;
+//   int row = value.y;
 
-  bool inside = compute_inside(top_left, top_right, bottom_right, bottom_left, threshold);
-  int type = compute_type(top_left, top_right, bottom_right, bottom_left, threshold);
+//   if (col == -1) {
+//     return;
+//   }
 
-  Point top{.x = col + linear_interpolation_factor(top_left, top_right, threshold), .y = (float)row};
-  Point right{.x = (float)(col + 1), .y = row + linear_interpolation_factor(top_right, bottom_right, threshold)};
-  Point bottom{.x = col + linear_interpolation_factor(bottom_left, bottom_right, threshold), .y = (float)(row + 1)};
-  Point left{.x = (float)col, .y = row + linear_interpolation_factor(top_left, bottom_left, threshold)};
+//   float top_left = heights[row][col];
+//   float top_right = heights[row][col + 1];
+//   float bottom_right = heights[row + 1][col + 1];
+//   float bottom_left = heights[row + 1][col];
 
-  int local_offset = count_for_type(type);
-  cuda::atomic_ref<int, cuda::thread_scope_device> segment_count_ref(*counter);
-  int offset = segment_count_ref.fetch_add(local_offset, cuda::memory_order_relaxed);
+//   bool inside = compute_inside(top_left, top_right, bottom_right, bottom_left, threshold);
+//   int type = compute_type(top_left, top_right, bottom_right, bottom_left, threshold);
 
-  types[offset] = type;
-}
+//   Point top{.x = col + linear_interpolation_factor(top_left, top_right, threshold), .y = (float)row};
+//   Point right{.x = (float)(col + 1), .y = row + linear_interpolation_factor(top_right, bottom_right, threshold)};
+//   Point bottom{.x = col + linear_interpolation_factor(bottom_left, bottom_right, threshold), .y = (float)(row + 1)};
+//   Point left{.x = (float)col, .y = row + linear_interpolation_factor(top_left, bottom_left, threshold)};
 
-__global__ void marching_squares_types_warp(compute::Grid heights, int* types, int* counter, float threshold) {
-  using WarpScan = cub::WarpScan<int>;
+//   switch (type) {
+//   case 0:
+//   case 15:
+//     break;
 
-  __shared__ typename WarpScan::TempStorage temp_storage[8];
-  __shared__ int global_offset[8];
+//   case 1:
+//   case 14:
+//     contours[index] = compute::Segment{.start = left, .end = bottom};
+//     break;
 
-  int col = blockIdx.x * blockDim.x + threadIdx.x;
-  int row = blockIdx.y * blockDim.y + threadIdx.y;
+//   case 2:
+//   case 13:
+//     contours[index] = compute::Segment{.start = bottom, .end = right};
+//     break;
 
-  bool active = (col < heights.size.width - 1) && (row < heights.size.height - 1);
-  int count, type;
+//   case 3:
+//   case 12:
+//     contours[index] = compute::Segment{.start = left, .end = right};
+//     break;
 
-  if (active) {
-    float top_left = heights[row][col];
-    float top_right = heights[row][col + 1];
-    float bottom_right = heights[row + 1][col + 1];
-    float bottom_left = heights[row + 1][col];
+//   case 4:
+//   case 11:
+//     contours[index] = compute::Segment{.start = top, .end = right};
+//     break;
 
-    type = compute_type(top_left, top_right, bottom_right, bottom_left, threshold);
-    count = count_for_type(type);
+//   case 5:
+//     if (inside) {
+//       contours[index] = compute::Segment{.start = left, .end = top};
+//       contours[index + 1] = compute::Segment{.start = bottom, .end = right};
+//     } else {
+//       contours[index] = compute::Segment{.start = left, .end = bottom};
+//       contours[index + 1] = compute::Segment{.start = top, .end = right};
+//     }
+//     break;
 
-  } else {
-    count = 0;
-  }
+//   case 6:
+//   case 9:
+//     contours[index] = compute::Segment{.start = top, .end = bottom};
+//     break;
 
-  int local_offset;
-  WarpScan(temp_storage[threadIdx.y]).ExclusiveSum(count, local_offset);
+//   case 7:
+//   case 8:
+//     contours[index] = compute::Segment{.start = left, .end = top};
+//     break;
 
-  if (threadIdx.x == 31) {
-    cuda::atomic_ref<int, cuda::thread_scope_device> segment_count_ref(*counter);
-    global_offset[threadIdx.y] = segment_count_ref.fetch_add(local_offset + count, cuda::memory_order_relaxed);
-  }
+//   case 10:
+//     if (inside) {
+//       contours[index] = compute::Segment{.start = top, .end = right};
+//       contours[index + 1] = compute::Segment{.start = left, .end = bottom};
+//     } else {
+//       contours[index] = compute::Segment{.start = top, .end = left};
+//       contours[index + 1] = compute::Segment{.start = right, .end = bottom};
+//     }
+//     break;
 
-  __syncwarp();
-  int offset = global_offset[threadIdx.y] + local_offset;
+//   default:
+//     break;
+//   }
+// }
 
-  if (active) {
-    types[offset] = type;
-  }
-}
+// __global__ void marching_squares_part_1_split(compute::Grid heights, int2* tmp_1, int2* tmp_2, Counts* counts,
+//                                               float threshold) {
+//   int col = blockIdx.x * blockDim.x + threadIdx.x;
+//   int row = blockIdx.y * blockDim.y + threadIdx.y;
 
-__global__ void marching_squares_types_block(compute::Grid heights, int* types, int* counter, float threshold) {
-  using BlockScan = cub::BlockScan<int, 256>;
-  __shared__ typename BlockScan::TempStorage temp_storage;
+//   if (col >= heights.size.width - 1 || row >= heights.size.height - 1) {
+//     return;
+//   }
 
-  __shared__ int global_offset;
+//   float top_left = heights[row][col];
+//   float top_right = heights[row][col + 1];
+//   float bottom_right = heights[row + 1][col + 1];
+//   float bottom_left = heights[row + 1][col];
 
-  int index = blockIdx.x * blockDim.x + threadIdx.x;
+//   int type = compute_type(top_left, top_right, bottom_right, bottom_left, threshold);
+//   int local_count = count_for_type(type);
 
-  int col = index % (heights.size.width - 1);
-  int row = index / (heights.size.width - 1);
+//   if (local_count == 1) {
+//     cuda::atomic_ref<int, cuda::thread_scope_device> segment_count_ref(counts->count_1);
+//     int global_count = segment_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
+//     tmp_1[global_count] = int2(col, row);
+//   }
 
-  bool active = (row < heights.size.height - 1);
-  int count, type;
+//   if (local_count == 2) {
+//     cuda::atomic_ref<int, cuda::thread_scope_device> segment_count_ref(counts->count_2);
+//     int global_count = segment_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
+//     tmp_2[global_count] = int2(col, row);
+//   }
+// }
+// __global__ void marching_squares_part_2_single(compute::Grid heights, compute::Segment* contours, int2* tmp_1,
+//                                                int count_1, float threshold) {
+//   int index = blockIdx.x * blockDim.x + threadIdx.x;
+//   if (index > count_1) {
+//     return;
+//   }
 
-  if (active) {
-    float top_left = heights[row][col];
-    float top_right = heights[row][col + 1];
-    float bottom_right = heights[row + 1][col + 1];
-    float bottom_left = heights[row + 1][col];
+//   int2 value = tmp_1[index];
 
-    type = compute_type(top_left, top_right, bottom_right, bottom_left, threshold);
-    count = count_for_type(type);
+//   int col = value.x;
+//   int row = value.y;
 
-  } else {
-    count = 0;
-  }
+//   float top_left = heights[row][col];
+//   float top_right = heights[row][col + 1];
+//   float bottom_right = heights[row + 1][col + 1];
+//   float bottom_left = heights[row + 1][col];
 
-  int local_offset;
-  BlockScan(temp_storage).ExclusiveSum(count, local_offset);
-  __syncthreads();
+//   int type = compute_type(top_left, top_right, bottom_right, bottom_left, threshold);
 
-  if (threadIdx.x == blockDim.x - 1) {
-    cuda::atomic_ref<int, cuda::thread_scope_device> segment_count_ref(*counter);
-    global_offset = segment_count_ref.fetch_add(local_offset + count, cuda::memory_order_relaxed);
-  }
+//   Point top{.x = col + linear_interpolation_factor(top_left, top_right, threshold), .y = (float)row};
+//   Point right{.x = (float)(col + 1), .y = row + linear_interpolation_factor(top_right, bottom_right, threshold)};
+//   Point bottom{.x = col + linear_interpolation_factor(bottom_left, bottom_right, threshold), .y = (float)(row + 1)};
+//   Point left{.x = (float)col, .y = row + linear_interpolation_factor(top_left, bottom_left, threshold)};
 
-  __syncthreads();
+//   switch (type) {
+//   case 0:
+//   case 15:
+//     break;
 
-  if (active) {
-    types[global_offset + local_offset] = type;
-  }
-}
+//   case 1:
+//   case 14:
+//     contours[index] = compute::Segment{.start = left, .end = bottom};
+//     break;
+
+//   case 2:
+//   case 13:
+//     contours[index] = compute::Segment{.start = bottom, .end = right};
+//     break;
+
+//   case 3:
+//   case 12:
+//     contours[index] = compute::Segment{.start = left, .end = right};
+//     break;
+
+//   case 4:
+//   case 11:
+//     contours[index] = compute::Segment{.start = top, .end = right};
+//     break;
+
+//   case 6:
+//   case 9:
+//     contours[index] = compute::Segment{.start = top, .end = bottom};
+//     break;
+
+//   case 7:
+//   case 8:
+//     contours[index] = compute::Segment{.start = left, .end = top};
+//     break;
+
+//   default:
+//     break;
+//   }
+// }
+// __global__ void marching_squares_part_2_double(compute::Grid heights, compute::Segment* contours, int2* tmp_2,
+//                                                int count_1, int count_2, float threshold) {
+//   int index = blockIdx.x * blockDim.x + threadIdx.x;
+//   if (index > count_2) {
+//     return;
+//   }
+
+//   int2 value = tmp_2[index];
+
+//   int col = value.x;
+//   int row = value.y;
+
+//   float top_left = heights[row][col];
+//   float top_right = heights[row][col + 1];
+//   float bottom_right = heights[row + 1][col + 1];
+//   float bottom_left = heights[row + 1][col];
+
+//   bool inside = compute_inside(top_left, top_right, bottom_right, bottom_left, threshold);
+//   int type = compute_type(top_left, top_right, bottom_right, bottom_left, threshold);
+
+//   Point top{.x = col + linear_interpolation_factor(top_left, top_right, threshold), .y = (float)row};
+//   Point right{.x = (float)(col + 1), .y = row + linear_interpolation_factor(top_right, bottom_right, threshold)};
+//   Point bottom{.x = col + linear_interpolation_factor(bottom_left, bottom_right, threshold), .y = (float)(row + 1)};
+//   Point left{.x = (float)col, .y = row + linear_interpolation_factor(top_left, bottom_left, threshold)};
+
+//   int pos = count_1 + 2 * index;
+
+//   switch (type) {
+//   case 5:
+//     if (inside) {
+//       contours[pos] = compute::Segment{.start = left, .end = top};
+//       contours[pos + 1] = compute::Segment{.start = bottom, .end = right};
+//     } else {
+//       contours[pos] = compute::Segment{.start = left, .end = bottom};
+//       contours[pos + 1] = compute::Segment{.start = top, .end = right};
+//     }
+//     break;
+
+//   case 10:
+//     if (inside) {
+//       contours[pos] = compute::Segment{.start = top, .end = right};
+//       contours[pos + 1] = compute::Segment{.start = left, .end = bottom};
+//     } else {
+//       contours[pos] = compute::Segment{.start = top, .end = left};
+//       contours[pos + 1] = compute::Segment{.start = right, .end = bottom};
+//     }
+//     break;
+
+//   default:
+//     break;
+//   }
+// }
 
 } // namespace perf

@@ -15,7 +15,10 @@ public:
   void update(std::shared_ptr<compute::GpuResources> resources, ApplicationState& state);
 
 private:
-  void updateCropState(ApplicationState& state);
+  void updateCropState(ApplicationState& state) const;
+  Circle computeEffectCircle(ApplicationState const& state) const;
+  void shift(std::shared_ptr<compute::GpuResources>& resources, ApplicationState const& state,
+             Circle effect_circle) const;
 
   Size _gridSize;
   Range _effectRadius;

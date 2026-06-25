@@ -90,3 +90,9 @@ Trying it in practice, we however observe a performance that is way worse than t
 // 0: 0.998288, 1: 0.001712, 2: 0.000000 across 21 thresholds
 // Threshold 0.000000, 0: 31853485, 1: 134516, 2: 0
 // 0: 0.995795, 1: 0.004205, 2: 0.000000
+
+
+//
+Compute capability → what the GPU can do (hardware feature set)
+Driver version → how software communicates and runs on that GPU
+CUDA toolkit → how code is compiled for that ecosystem
