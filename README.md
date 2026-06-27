@@ -97,7 +97,7 @@ In theory we could also eliminate the square root in the computation of the dist
 
 We next take a look at the [marching squares](src/compute/kernels/marching_squares.cu) kernel. This kernel uses the [marching squares algorithm](https://en.wikipedia.org/wiki/Marching_squares) to compute the contour lines of the underlying height grid. For the specified threshold values, this algorithm approximates respective contours with linear segments at a resolution of the grid underlying dimensions.
 
-Unlike a convolution kernel, this algorithm has a dynamic output size. For every four adjacent grid vertices (a $2\times2$ subgrid) and a single threshold, it may produce zero, one or two contour segments. This variance naturally increases with the amount of thresholds one wants to compute the contours at.
+This algorithm may be viewed as a combination of a convolution and an (unstable) filter kernel. Like a convolution kernel, we stride over the whole input grid with $2\times2$ subgrids. However, unlike a convolution, each subgrid produces a variably sized output For every four adjacent grid vertices (a $2\times2$ subgrid) and a single threshold, it may produce zero, one or two contour segments.
 
 A simple solution to deal with this dynamic output would be to have each $2\times2$ subgrid always produce its maximal amount of output segments, setting the unused ones to `NaN` or some values outside the displayed area. However, that would take away a lot of the challenges for optimizing the kernel and what we are actually interested in. Plus, a kernel that yields only as many output segments as actually required gives a nice general solution and takes away work from the shader that renders them.
 
@@ -114,7 +114,7 @@ Let us take a look at the computational intensity of this kernel. Since the amou
 | **FLOPs**        | 0          | 8         | 38         |
 | **OP/B**         | 0          | 0.2       | 0.68       |
 
-We can already notice that in this naive implementation, the kernel is heavily memory bound, even more so than the previous smoothstep kernel. Further we see that the computational intensity differs by quite a bit across the various output conditions.
+We can already notice that in this naive implementation, the kernel is heavily memory bound, even more so than the previous *smoothstep kernel*. Further we see that the computational intensity differs by quite a bit across the various output conditions.
 
 To get a feeling about the frequency, with which we can expect each of these 3 cases to arise, we launch the kernel on very regular sinusoidal grid and two variations of Perlin noise (one producing very turbulent and the other more gentle terrain). We also let the contour thresholds vary between the range of possible values. When counting the occurrence of each case, we notice a very skewed distribution which we show in the below table.
 
@@ -126,24 +126,49 @@ To get a feeling about the frequency, with which we can expect each of these 3 c
 
 The output is quite revealing. For most $2\times2$ subgrids, we won't be doing any computation at all. Only rarely, a subgrid will actually produce an output segment and two are rarer still. As a grid initialized with gentle Perlin noise appears to be the more interesting and realistic case, we will use it to continue with our profiling.
 
+#### Using vector stores for the output
+In its basic implementation, the performance of our kernel is quite poor. We measure a runtime of 2.76 ms on our $8000\times4000$ profiling grid. However there is an easy win waiting for us. Each contour segment consists of two $(x, y)$ start and end points, which maps naturally onto a single `float4` vector.
+
+We already saw in the *smoothstep* kernel how vector stores and loads improved performance. In this kernel the gain is even more pronounced. Switching to `float4` stores, we observe a speedup by a factor of 1.33. The runtime is now at 2.07 ms and the number of executed instructions decreased by 37%.
+
 #### Splitting the kernel into two
-With this naive single-kernel implementation, we can expect warp divergence to be quite high. Using the above numbers we can expect one average only one thread in a grid of size 512 to do any floating point computations. That is, only one thread might prevent its whole block from returning early. Precious time that could be spend on computing the contours on different parts of the height grid instead.
+With the naive single-kernel implementation, we can expect warp divergence to be quite high. From the distribution measured above, on average only around one thread in every 500 will perform any floating-point computation. A single active thread is enough to prevent its entire warp from retiring early. Precious execution time that could otherwise be spent computing contours on a different region of the height grid.
 
-Instead of computing the contours in one go, we can split our kernel into two parts. The first one will check each grid cell if a contour segment falls into it. If it does, the grid indices are written to a temporary buffer (of `int2`'s for convenience). As before the respective indices are being written by atomically increasing a global counter. The second kernel then loads each such pair of indices, computes the respective contour segment and, reusing the same index, writes them to the final contour buffer.
+Instead of computing the contours in a single pass, we can split our kernel into two.The first kernel checks each grid cell for the presence of a contour segment. If one is found, the cell's grid indices are written to a temporary buffer (using `int2`'s for convenience). As in the basic implementation, the output slot is determined by atomically increasing a global counter. The second kernel then reads each such index pair, computes the corresponding contour segment, and writes it, reusing the same index, to the final contour buffer.
 
-Launching the second kernel with the same amount of threads as the first, leaving the counter on the GPU, we already see a big improvement of several µs. However that still leaves the kernel with a huge amount of wasted threads. Instead we can copy the counter back to the CPU and only launch the kernel with the necessary amount of threads. Even though we now have a costly memory operation, the reduced kernel size is able to make up for up, giving us again a noticeable improvement in overall runtime.
+In a first attempt, we launch the second kernel with the same amount of threads as the first one, leaving the counter resident on the GPU. This already yields a noticeable improvement of [TODO amount]. HHowever, the second kernel still wastes the vast majority of its threads. We can do better by copying the counter back to the CPU and launching the second kernel with exactly as many threads as there are segments to compute. Despite the added cost of the device-to-host transfer, the much smaller dispatch more than compensates, improving the overall runtime down to [TODO amount].
 
-While in theory we are still left with some warp divergence in the second kernel, the event of having two segments is so rare that we basically can ignore it. Further dividing the kernel introduces additional overhead that outweighs any performance gains from reducing negligible warp divergence.
+In theory, we are still left with warp divergence in the second kernel. But the two-segment case is so rare, that we can essentially neglect it.  Subdividing the kernel further would introduce additional overhead that outweighs any gains from eliminating this remaining divergence.
 
 #### Shared memory
+As a further benefit of having two kernels, we can now profile each stage. An obvious next optimization is shared memory. With computation happening in $2\times2$ subgrids, most data is actually reused by other threads. With square blocks of size $n$, the amount of repeatedly loaded halo cells is $4n-1$. A quite low amount when compared to $n^2$, the amount of inner cells that are loaded only once. Using shared memory, the number of bytes loaded by such a block approaches one quarter of the original amount as $n\to\infty$.
 
-As a benefit of having two kernels, we can now better profile individual sections. An obvious optimization seems to be the use shared memory instead of loading all the data individually from DRAM in each thread. With computation happening in $2\times2$ subgrids, most data is actually reused by other threads. With square blocks of size $n$, the amount of repeatedly loaded halo cells is with $4n-1$ fairly low compared to $n^2$, the amount of inner cells that are loaded only once. Using shared memory, the number of bytes loaded by such a block approaches one quarter of the original amount as $n\to\infty$.
+Trying it in practice, we however observe a performance far worse than that of a naive implementation loading all data separately. The use of shared memory now adds additional instructions (due to the branching logic when loading data) and more importantly, barriers to our kernel. We now see way more warps stalling and doing nothing waiting for their block's data to arrive.
 
-Trying it in practice, we however observe a performance far worse than that of a naive implementation loading all data separately. The use of shared memory now adds additional instructions (due to the branching logic when loading data) and more importantly, barriers to our kernel. We now see way more warps stalling and doing nothing waiting for their block's data to arrive. This is especially costly with the large number of threads that later end up doing no useful work anyways.
+#### Packing the grid values for reuse
+We saw that even though there are repeated loads, the first kernel still exhibits a favorable memory access pattern. The second kernel, in its current form, unfortunately doesn't. Memory accesses can be scattered around the height grid and two neighboring threads need not access neighboring data. As a result, the L2 cache hit rate is only around 57.5%. This is a relatively low value considering that each thread accesses two pairs of consecutive data elements by default.
+
+Since data reuse is limited, we apply the same idea as before and store the corresponding $2\times2$ subgrid values as packed `float4` vectors in the first kernel, alongside the grid indices. The second kernel can then load these packed values instead of fetching the data from the height grid directly. While this introduces an additional store instruction in the first kernel, it allows the second kernel to access its input in a fully coalesced manner.
+
+Although this optimization reduces the runtime of the second kernel by approximately 39%, it also increases the runtime of the first kernel by [TODO]% due to the additional stores. Overall, the combined runtime appears to be marginally lower than that of the original implementation. However, we were unable to reproduce this improvement consistently across repeated measurements. Given the additional implementation complexity and the lack of a reproducible speedup, we decided not to pursue this optimization further.
+
+In the below table we illustrations the runtimes of these two kernel variants across different setups which we summarize by their fraction of cells producing at least one output segment. 
+
+|                       |         20% |         ~2% |       ~0.2% |      ~0.02% |
+| --------------------- | ----------: | ----------: | ----------: | ----------: |
+| Basic Kernel 1        |     7.93 ms |     1.43 ms |     1.05 ms |     1.02 ms |
+| Basic Kernel 2        |     1.69 ms |     0.19 ms |     0.03 ms |     0.01 ms |
+| **Basic Combined**    | **9.62 ms** | **1.62 ms** | **1.08 ms** |     1.03 ms |
+| `float4` Kernel 1     |     8.69 ms |     1.48 ms |     1.06 ms |     1.02 ms |
+| `float4` Kernel 2     |     1.22 ms |     0.10 ms |     0.01 ms |     0.01 ms |
+| **`float4` Combined** | **9.91 ms** | **1.58 ms** | **1.07 ms** | **1.03 ms** |
+
+#### Next section
+We need to find another to optimize our kernel...
 
 #### TOOD
 
-// store grid heights as float4
-// 2D -> 1D; thread, warp, block scan -> atomic write (both on full and slim kernel)
-// TODO try __restrict__, __ldg()
-
+// Profile single kernel vs double kernel approach
+// No atomic add for 0, warp scan, block scan
+// Coarsen along thresholds
+// Outlook, Intro

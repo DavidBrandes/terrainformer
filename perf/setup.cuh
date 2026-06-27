@@ -55,8 +55,8 @@ GpuBuffer<float> make_gpu_buffer(HeightGrid const& height_grid);
 
 template <typename T = decltype([]() {}), typename U = decltype([]() {})>
 void benchmark(T&& func, U&& setup = []() {}) {
-  constexpr int warmup_iterations = 5;
-  constexpr int benchmark_iterations = 100;
+  constexpr int warmup_iterations = 10;
+  constexpr int benchmark_iterations = 1000;
 
   for (int i = 0; i < warmup_iterations; ++i) {
     setup();
@@ -94,7 +94,7 @@ Point point_from_normalized(Size size, float x_normalized = 0.5f, float y_normal
 float radius_from_normalized(Size size, float radius_normalized = 0.5f);
 BrushDab make_brush_dab(Point center, float radius, float intensity = 0.01f);
 
-void plot(std::vector<float> const& heights, Size size, std::vector<compute::Segment> const& segments = {},
+void plot(std::vector<float> const& heights, Size size, std::vector<float4> const& segments = {},
           std::string_view title = "plot");
 
 } // namespace perf

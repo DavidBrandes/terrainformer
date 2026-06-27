@@ -30,10 +30,17 @@ struct Segments {
 };
 
 struct Grid {
-  float* values;
+  float* __restrict__ values;
   Size size;
 
   __device__ float* operator[](int row) { return values + row * size.width; }
+};
+
+struct CGrid {
+  float const* __restrict__ values;
+  Size size;
+
+  __device__ float const* operator[](int row) const { return values + row * size.width; }
 };
 
 struct ConstrainedGrid : public Grid {

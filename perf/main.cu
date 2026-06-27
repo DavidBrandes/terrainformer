@@ -42,9 +42,9 @@ void launch_smoothstep() {
 void launch_marching_squares() {
   HeightGrid height_grid = make_height_grid(GRID_CONFIG);
   GpuBuffer<float> height_grid_buffer = make_gpu_buffer(height_grid);
-  compute::Grid heights{.values = height_grid_buffer.data, .size = SIZE};
+  compute::CGrid c_heights{.values = height_grid_buffer.data, .size = SIZE};
 
-  GpuBuffer<compute::Segment> contour_buffer{(height_grid.size.width - 1) * (height_grid.size.height - 1) * 2};
+  GpuBuffer<float4> contour_buffer{(height_grid.size.width - 1) * (height_grid.size.height - 1) * 2};
   GpuBuffer<int> count_buffer{1};
   cudaMemset(count_buffer.data, 0, sizeof(int));
 
@@ -53,101 +53,42 @@ void launch_marching_squares() {
   dim3 block_dim(16, 16);
   dim3 grid_dim(compute::ceil_div(SIZE.width - 1, block_dim.x), compute::ceil_div(SIZE.height - 1, block_dim.y));
 
-  // auto setup_1 = [&]() {
-  //   cudaMemset(count_buffer.data, 0, sizeof(int));
-  //   cudaMemset(contour_buffer.data, 0, contour_buffer.size * sizeof(compute::Segment));
-  // };
+  GpuBuffer<int2> tmp_coordinates_buffer{contour_buffer.size};
 
-  // auto func_1 = [&]() {
-  //   perf::marching_squares<<<grid_dim, block_dim>>>(heights, contour_buffer.data, count_buffer.data,
-  //                                                   contour_buffer.size, threshold);
-  // };
+  auto setup_1 = [&]() {
+    cudaMemset(count_buffer.data, 0, sizeof(int));
+    cudaMemset(contour_buffer.data, 0, contour_buffer.size * sizeof(float4));
+  };
 
-  GpuBuffer<int2> tmp_buffer{contour_buffer.size};
+  auto func_1 = [&]() {
+    perf::marching_squares<<<grid_dim, block_dim>>>(c_heights, count_buffer.data, contour_buffer.size,
+                                                    contour_buffer.data, threshold);
+  };
 
   auto setup_2 = [&]() {
     cudaMemset(count_buffer.data, 0, sizeof(int));
-    cudaMemset(contour_buffer.data, 0, contour_buffer.size * sizeof(compute::Segment));
-    cudaMemset(tmp_buffer.data, 0, tmp_buffer.size * sizeof(int2));
+    cudaMemset(contour_buffer.data, 0, contour_buffer.size * sizeof(float4));
+    cudaMemset(tmp_coordinates_buffer.data, 0, tmp_coordinates_buffer.size * sizeof(int2));
   };
 
   auto func_2 = [&]() {
-    perf::marching_squares_part_1<<<grid_dim, block_dim>>>(heights, count_buffer.data, contour_buffer.size,
-                                                           tmp_buffer.data, threshold);
+    perf::marching_squares_part_1<<<grid_dim, block_dim>>>(c_heights, count_buffer.data, contour_buffer.size,
+                                                           tmp_coordinates_buffer.data, threshold);
 
     int count;
     cudaMemcpy(&count, count_buffer.data, sizeof(int), cudaMemcpyDeviceToHost);
 
     dim3 block_dim_2(256);
     dim3 grid_dim_2(compute::ceil_div(count, block_dim_2.x));
-    perf::marching_squares_part_2<<<grid_dim_2, block_dim_2>>>(heights, contour_buffer.data, count, tmp_buffer.data,
-                                                               threshold);
+    perf::marching_squares_part_2<<<grid_dim_2, block_dim_2>>>(c_heights, contour_buffer.data, count,
+                                                               tmp_coordinates_buffer.data, threshold);
   };
 
-  // auto setup_3 = [&]() {
-  //   cudaMemset(count_buffer.data, 0, sizeof(int));
-  //   cudaMemset(contour_buffer.data, 0, contour_buffer.size * sizeof(compute::Segment));
-  //   cudaMemset(tmp_buffer.data, 0, tmp_buffer.size * sizeof(int2));
-  // };
-
-  // auto func_3 = [&]() {
-  //   perf::marching_squares_part_1<<<grid_dim, block_dim>>>(heights, count_buffer.data, contour_buffer.size,
-  //                                                          tmp_buffer.data, threshold);
-  //   dim3 block_dim_2(256);
-  //   dim3 grid_dim_2(compute::ceil_div((SIZE.width - 1) * (SIZE.height - 1), block_dim_2.x));
-  //   perf::marching_squares_part_2<<<grid_dim_2, block_dim_2>>>(heights, contour_buffer.data, count_buffer.data,
-  //                                                              tmp_buffer.data, threshold);
-  // };
-
-  // GpuBuffer<int2> tmp_buffer_2{contour_buffer.size};
-  // GpuBuffer<Counts> counts_buffer{1};
-
-  // auto setup_4 = [&]() {
-  //   cudaMemset(counts_buffer.data, 0, sizeof(Counts));
-  //   cudaMemset(contour_buffer.data, 0, contour_buffer.size * sizeof(compute::Segment));
-  //   cudaMemset(tmp_buffer.data, 0, tmp_buffer.size * sizeof(int2));
-  //   cudaMemset(tmp_buffer_2.data, 0, tmp_buffer.size * sizeof(int2));
-  // };
-
-  // auto func_4 = [&]() {
-  //   perf::marching_squares_part_1_split<<<grid_dim, block_dim>>>(heights, tmp_buffer.data, tmp_buffer_2.data,
-  //                                                                counts_buffer.data, threshold);
-
-  //   Counts counts;
-  //   cudaMemcpy(&counts, counts_buffer.data, sizeof(Counts), cudaMemcpyDeviceToHost);
-
-  //   dim3 block_dim_2_single(256);
-  //   dim3 grid_dim_2_single(compute::ceil_div(counts.count_1, block_dim_2_single.x));
-  //   perf::marching_squares_part_2_single<<<grid_dim_2_single, block_dim_2_single>>>(
-  //       heights, contour_buffer.data, tmp_buffer.data, counts.count_1, threshold);
-
-  //   dim3 block_dim_2_double(256);
-  //   dim3 grid_dim_2_double(compute::ceil_div(counts.count_2, block_dim_2_double.x));
-  //   perf::marching_squares_part_2_double<<<grid_dim_2_double, block_dim_2_double>>>(
-  //       heights, contour_buffer.data, tmp_buffer_2.data, counts.count_1, counts.count_2, threshold);
-  // };
-
-  // benchmark(func_4, setup_4);
-  // plot(height_grid_buffer.toVector(), SIZE, contour_buffer.toVector(), "double-split");
-  // benchmark(func_3, setup_3);
-  // plot(height_grid_buffer.toVector(), SIZE, contour_buffer.toVector(), "double-no-copy");
-  // benchmark(func_2, setup_2);
-  // benchmark(func_1, setup_1);
-  // plot(height_grid_buffer.toVector(), SIZE, contour_buffer.toVector(), "single");
-
-  // setup_1();
-  // func_1();
-
-  setup_2();
-  func_2();
-  plot(height_grid_buffer.toVector(), SIZE, contour_buffer.toVector(), "double");
-
-  // setup_3();
-  // func_3();
-
-  // setup_4();
-  // func_4();
+  setup_1();
+  func_1();
+  // plot(height_grid_buffer.toVector(), SIZE, contour_buffer.toVector());
 }
+
 } // namespace perf
 
 int main() { perf::launch_marching_squares(); }
