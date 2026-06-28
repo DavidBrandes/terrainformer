@@ -1,4 +1,5 @@
 #include <cmath>
+#include <cub/cub.cuh>
 #include <cuda/atomic>
 
 #include "kernel.cuh"
@@ -77,6 +78,10 @@ __global__ void marching_squares_part_1(compute::CGrid heights, int* __restrict_
   int type = compute_type(top_left, top_right, bottom_right, bottom_left, threshold);
   int local_count = count_for_type(type);
 
+  if (local_count == 0) {
+    return;
+  }
+
   cuda::atomic_ref<int, cuda::thread_scope_device> segment_count_ref(*count);
   int global_count = segment_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
 
@@ -84,9 +89,7 @@ __global__ void marching_squares_part_1(compute::CGrid heights, int* __restrict_
     return;
   }
 
-  if (local_count > 0) {
-    tmp[global_count] = int2(col, row);
-  }
+  tmp[global_count] = int2(col, row);
 
   if (local_count == 2) {
     // We let the first entry in the coordinate array compute both output segments.
@@ -192,117 +195,6 @@ __global__ void marching_squares_part_2(compute::CGrid heights, float4* __restri
       contours[index] = float4(col + linear_interpolation_factor(top_left, top_right, threshold), (float)row,
                                (float)col, row + linear_interpolation_factor(top_left, bottom_left, threshold));
       contours[index + 1] =
-          float4((float)(col + 1), row + linear_interpolation_factor(top_right, bottom_right, threshold),
-                 col + linear_interpolation_factor(bottom_left, bottom_right, threshold), (float)(row + 1));
-    }
-    break;
-
-  default:
-    break;
-  }
-}
-
-__global__ void marching_squares(compute::CGrid heights, int* __restrict__ count, int max_count,
-                                 float4* __restrict__ contours, float threshold) {
-  int col = blockIdx.x * blockDim.x + threadIdx.x;
-  int row = blockIdx.y * blockDim.y + threadIdx.y;
-
-  if (col >= heights.size.width - 1 || row >= heights.size.height - 1) {
-    return;
-  }
-
-  float top_left = heights[row][col];
-  float top_right = heights[row][col + 1];
-  float bottom_right = heights[row + 1][col + 1];
-  float bottom_left = heights[row + 1][col];
-
-  int type = compute_type(top_left, top_right, bottom_right, bottom_left, threshold);
-  int local_count = count_for_type(type);
-
-  cuda::atomic_ref<int, cuda::thread_scope_device> segment_count_ref(*count);
-  int global_count = segment_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
-
-  if (local_count + global_count > max_count) {
-    return;
-  }
-
-  bool inside = compute_inside(top_left, top_right, bottom_right, bottom_left, threshold);
-
-  switch (type) {
-  case 0:
-  case 15:
-    break;
-
-  case 1:
-  case 14:
-    contours[global_count] =
-        float4((float)col, row + linear_interpolation_factor(top_left, bottom_left, threshold),
-               col + linear_interpolation_factor(bottom_left, bottom_right, threshold), (float)(row + 1));
-    break;
-
-  case 2:
-  case 13:
-    contours[global_count] =
-        float4(col + linear_interpolation_factor(bottom_left, bottom_right, threshold), (float)(row + 1),
-               (float)(col + 1), row + linear_interpolation_factor(top_right, bottom_right, threshold));
-    break;
-
-  case 3:
-  case 12:
-    contours[global_count] =
-        float4((float)col, row + linear_interpolation_factor(top_left, bottom_left, threshold), (float)(col + 1),
-               row + linear_interpolation_factor(top_right, bottom_right, threshold));
-    break;
-
-  case 4:
-  case 11:
-    contours[global_count] =
-        float4(col + linear_interpolation_factor(top_left, top_right, threshold), (float)row, (float)(col + 1),
-               row + linear_interpolation_factor(top_right, bottom_right, threshold));
-    break;
-
-  case 5:
-    if (inside) {
-      contours[global_count] = float4((float)col, row + linear_interpolation_factor(top_left, bottom_left, threshold),
-                                      col + linear_interpolation_factor(top_left, top_right, threshold), (float)row);
-      contours[global_count + 1] =
-          float4(col + linear_interpolation_factor(bottom_left, bottom_right, threshold), (float)(row + 1),
-                 (float)(col + 1), row + linear_interpolation_factor(top_right, bottom_right, threshold));
-    } else {
-      contours[global_count] =
-          float4((float)col, row + linear_interpolation_factor(top_left, bottom_left, threshold),
-                 col + linear_interpolation_factor(bottom_left, bottom_right, threshold), (float)(row + 1));
-      contours[global_count + 1] =
-          float4(col + linear_interpolation_factor(top_left, top_right, threshold), (float)row, (float)(col + 1),
-                 row + linear_interpolation_factor(top_right, bottom_right, threshold));
-    }
-    break;
-
-  case 6:
-  case 9:
-    contours[global_count] =
-        float4(col + linear_interpolation_factor(top_left, top_right, threshold), (float)row,
-               col + linear_interpolation_factor(bottom_left, bottom_right, threshold), (float)(row + 1));
-    break;
-
-  case 7:
-  case 8:
-    contours[global_count] = float4((float)col, row + linear_interpolation_factor(top_left, bottom_left, threshold),
-                                    col + linear_interpolation_factor(top_left, top_right, threshold), (float)row);
-    break;
-
-  case 10:
-    if (inside) {
-      contours[global_count] =
-          float4(col + linear_interpolation_factor(top_left, top_right, threshold), (float)row, (float)(col + 1),
-                 row + linear_interpolation_factor(top_right, bottom_right, threshold));
-      contours[global_count + 1] =
-          float4((float)col, row + linear_interpolation_factor(top_left, bottom_left, threshold),
-                 col + linear_interpolation_factor(bottom_left, bottom_right, threshold), (float)(row + 1));
-    } else {
-      contours[global_count] = float4(col + linear_interpolation_factor(top_left, top_right, threshold), (float)row,
-                                      (float)col, row + linear_interpolation_factor(top_left, bottom_left, threshold));
-      contours[global_count + 1] =
           float4((float)(col + 1), row + linear_interpolation_factor(top_right, bottom_right, threshold),
                  col + linear_interpolation_factor(bottom_left, bottom_right, threshold), (float)(row + 1));
     }

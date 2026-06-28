@@ -50,43 +50,36 @@ void launch_marching_squares() {
 
   float threshold = 0;
 
-  dim3 block_dim(16, 16);
-  dim3 grid_dim(compute::ceil_div(SIZE.width - 1, block_dim.x), compute::ceil_div(SIZE.height - 1, block_dim.y));
-
   GpuBuffer<int2> tmp_coordinates_buffer{contour_buffer.size};
 
-  auto setup_1 = [&]() {
-    cudaMemset(count_buffer.data, 0, sizeof(int));
-    cudaMemset(contour_buffer.data, 0, contour_buffer.size * sizeof(float4));
-  };
-
-  auto func_1 = [&]() {
-    perf::marching_squares<<<grid_dim, block_dim>>>(c_heights, count_buffer.data, contour_buffer.size,
-                                                    contour_buffer.data, threshold);
-  };
-
-  auto setup_2 = [&]() {
+  auto setup = [&]() {
     cudaMemset(count_buffer.data, 0, sizeof(int));
     cudaMemset(contour_buffer.data, 0, contour_buffer.size * sizeof(float4));
     cudaMemset(tmp_coordinates_buffer.data, 0, tmp_coordinates_buffer.size * sizeof(int2));
   };
 
-  auto func_2 = [&]() {
-    perf::marching_squares_part_1<<<grid_dim, block_dim>>>(c_heights, count_buffer.data, contour_buffer.size,
-                                                           tmp_coordinates_buffer.data, threshold);
-
+  auto post = [&](std::string title) {
     int count;
+
     cudaMemcpy(&count, count_buffer.data, sizeof(int), cudaMemcpyDeviceToHost);
 
-    dim3 block_dim_2(256);
-    dim3 grid_dim_2(compute::ceil_div(count, block_dim_2.x));
-    perf::marching_squares_part_2<<<grid_dim_2, block_dim_2>>>(c_heights, contour_buffer.data, count,
-                                                               tmp_coordinates_buffer.data, threshold);
+    dim3 block_dim(256);
+    dim3 grid_dim(compute::ceil_div(count, block_dim.x));
+    perf::marching_squares_part_2<<<grid_dim, block_dim>>>(c_heights, contour_buffer.data, count,
+                                                           tmp_coordinates_buffer.data, threshold);
+
+    plot(height_grid_buffer.toVector(), SIZE, contour_buffer.toVector(), title);
   };
 
-  setup_1();
-  func_1();
-  // plot(height_grid_buffer.toVector(), SIZE, contour_buffer.toVector());
+  auto dflt = [&]() {
+    dim3 block_dim(16, 16);
+    dim3 grid_dim(compute::ceil_div(SIZE.width - 1, block_dim.x), compute::ceil_div(SIZE.height - 1, block_dim.y));
+    perf::marching_squares_part_1<<<grid_dim, block_dim>>>(c_heights, count_buffer.data, contour_buffer.size,
+                                                           tmp_coordinates_buffer.data, threshold);
+  };
+
+  setup();
+  dflt();
 }
 
 } // namespace perf

@@ -129,18 +129,24 @@ The output is quite revealing. For most $2\times2$ subgrids, we won't be doing a
 #### Using vector stores for the output
 In its basic implementation, the performance of our kernel is quite poor. We measure a runtime of 2.76 ms on our $8000\times4000$ profiling grid. However there is an easy win waiting for us. Each contour segment consists of two $(x, y)$ start and end points, which maps naturally onto a single `float4` vector.
 
-We already saw in the *smoothstep* kernel how vector stores and loads improved performance. In this kernel the gain is even more pronounced. Switching to `float4` stores, we observe a speedup by a factor of 1.33. The runtime is now at 2.07 ms and the number of executed instructions decreased by 37%.
+We already saw in the smoothstep kernel how vector stores and loads improved performance. In this kernel the gain is even more pronounced. Switching to `float4` stores, we observe a speedup by a factor of 1.33. The runtime is now at 2.07 ms and the number of executed instructions decreased by 37% (although we suspect that some of these gains can be attributed to the fact that we now construct the output vectors in place, while before we constructed the output data upfront and only later chose what was needed).
 
 #### Splitting the kernel into two
 With the naive single-kernel implementation, we can expect warp divergence to be quite high. From the distribution measured above, on average only around one thread in every 500 will perform any floating-point computation. A single active thread is enough to prevent its entire warp from retiring early. Precious execution time that could otherwise be spent computing contours on a different region of the height grid.
 
-Instead of computing the contours in a single pass, we can split our kernel into two.The first kernel checks each grid cell for the presence of a contour segment. If one is found, the cell's grid indices are written to a temporary buffer (using `int2`'s for convenience). As in the basic implementation, the output slot is determined by atomically increasing a global counter. The second kernel then reads each such index pair, computes the corresponding contour segment, and writes it, reusing the same index, to the final contour buffer.
+Instead of computing the contours in a single pass, we can split our kernel into two. The first kernel checks each grid cell for the presence of a contour segment. If one is found, the cell's grid indices are written to a temporary buffer (using `int2`'s for convenience). As in the basic implementation, the output slot is determined by atomically increasing a global counter. The second kernel then reads each such index pair, computes the corresponding contour segment, and writes it, reusing the same index, to the final contour buffer.
 
-In a first attempt, we launch the second kernel with the same amount of threads as the first one, leaving the counter resident on the GPU. This already yields a noticeable improvement of [TODO amount]. HHowever, the second kernel still wastes the vast majority of its threads. We can do better by copying the counter back to the CPU and launching the second kernel with exactly as many threads as there are segments to compute. Despite the added cost of the device-to-host transfer, the much smaller dispatch more than compensates, improving the overall runtime down to [TODO amount].
+To profile this modified setup, we need to switch to CUDA events as opposed to `ncu`, the profiling tool that we've used so far. Because `ncu` introduces profiling overhead by its nature and may rerun kernels several times to gather all information, the reported runtimes may differ from those measured with CUDA events and are typically higher. The conclusions we make about the relative kernel runtimes, however, hold regardless.
 
-In theory, we are still left with warp divergence in the second kernel. But the two-segment case is so rare, that we can essentially neglect it.  Subdividing the kernel further would introduce additional overhead that outweighs any gains from eliminating this remaining divergence.
+CUDA events allow us to capture timings across multiple kernel launches, including any potential memory transfers in between. In our setup, we run each variant 1000 times after 10 warmup iterations and report the average runtime. Using this method, we observe an average runtime of 1429 µs for the current version of our kernel before applying any division.
 
-#### Shared memory
+In a first attempt, we launch the second kernel with the same amount of threads as there are potential contour lines, leaving the counter resident on the GPU. This yields a degraded runtime of 1551 µs (1137 µs for first and 414 µs in the second kernel). The second kernel wastes the vast majority of its threads doing nothing.
+
+We can do better by copying the counter back to the CPU and launching the second kernel with exactly as many threads as there are segments to compute. Despite the added cost of the device-to-host transfer, the much smaller dispatch more than compensates, improving the overall runtime down to 1194 µs (using 17 µs and 40 µs for the memory transfer and second kernel respectively).
+
+Splitting the kernel into two parts, we improved our algorithm by approximately 16%. In theory, we are still left with warp divergence in the second kernel. But the two-segment case is so rare, that we can essentially neglect it. Subdividing the kernel further would introduce additional overhead that outweighs any gains from eliminating this remaining divergence.
+
+#### Storing the height grid in shared memory
 As a further benefit of having two kernels, we can now profile each stage. An obvious next optimization is shared memory. With computation happening in $2\times2$ subgrids, most data is actually reused by other threads. With square blocks of size $n$, the amount of repeatedly loaded halo cells is $4n-1$. A quite low amount when compared to $n^2$, the amount of inner cells that are loaded only once. Using shared memory, the number of bytes loaded by such a block approaches one quarter of the original amount as $n\to\infty$.
 
 Trying it in practice, we however observe a performance far worse than that of a naive implementation loading all data separately. The use of shared memory now adds additional instructions (due to the branching logic when loading data) and more importantly, barriers to our kernel. We now see way more warps stalling and doing nothing waiting for their block's data to arrive.
@@ -150,25 +156,21 @@ We saw that even though there are repeated loads, the first kernel still exhibit
 
 Since data reuse is limited, we apply the same idea as before and store the corresponding $2\times2$ subgrid values as packed `float4` vectors in the first kernel, alongside the grid indices. The second kernel can then load these packed values instead of fetching the data from the height grid directly. While this introduces an additional store instruction in the first kernel, it allows the second kernel to access its input in a fully coalesced manner.
 
-Although this optimization reduces the runtime of the second kernel by approximately 39%, it also increases the runtime of the first kernel by [TODO]% due to the additional stores. Overall, the combined runtime appears to be marginally lower than that of the original implementation. However, we were unable to reproduce this improvement consistently across repeated measurements. Given the additional implementation complexity and the lack of a reproducible speedup, we decided not to pursue this optimization further.
+Although this optimization reduces the runtime of the second kernel by approximately 39%, it also increases the runtime of the first kernel slightly by about 1% due to the additional stores. Overall, the combined runtime appears to be marginally lower than that of the original implementation. However, we were unable to reproduce this improvement consistently across repeated measurements. Given the additional implementation complexity and the lack of a reproducible speedup, we decided not to pursue this optimization further.
 
-In the below table we illustrations the runtimes of these two kernel variants across different setups which we summarize by their fraction of cells producing at least one output segment. 
+#### Reducing pressure on the atomic counter
+We need to find another way to optimize our kernels further. Looking at the warp stall statistics of the first, we observe a very high cycle count for *Stall Long Scoreboard*. This metric indicates that our kernel's warps spend a lot of their lifetime waiting on data from DRAM to arrive. This might be due to the kernel's general memory requirements but inspecting the code we actually see another culprit. Every thread increments the global atomic counter for the number of output segments, regardless of whether its increment is zero.
 
-|                       |         20% |         ~2% |       ~0.2% |      ~0.02% |
-| --------------------- | ----------: | ----------: | ----------: | ----------: |
-| Basic Kernel 1        |     7.93 ms |     1.43 ms |     1.05 ms |     1.02 ms |
-| Basic Kernel 2        |     1.69 ms |     0.19 ms |     0.03 ms |     0.01 ms |
-| **Basic Combined**    | **9.62 ms** | **1.62 ms** | **1.08 ms** |     1.03 ms |
-| `float4` Kernel 1     |     8.69 ms |     1.48 ms |     1.06 ms |     1.02 ms |
-| `float4` Kernel 2     |     1.22 ms |     0.10 ms |     0.01 ms |     0.01 ms |
-| **`float4` Combined** | **9.91 ms** | **1.58 ms** | **1.07 ms** | **1.03 ms** |
+All of these operations put a lot of pressure on the counter. After modifying the code to only increment the counter when a segment is actually produced, we find the above stall metric almost halved, now averaging only around 6 cycles. Consequently, the amount of *Eligible Warps Per Scheduler* is now increased by 73% to 1.53. Overall, reducing the contention on the atomic variable decreased the runtime of the first kernel from 1.81 µs to 1.06 µs.
 
-#### Next section
-We need to find another to optimize our kernel...
+We could try to go further, aggregate the increments, and only write to the counter once per warp/block. However, this does not give us much at this point. As we saw in the analysis, the case of having a grid vertex produce a contour segment is very rare. So rare that any synchronization actually degrades performance. We illustrate the runtime of the kernel variants in the below table.
+
+|             | Write from each thread | Write if > 0 | Write once per warp | Write once per block |
+| ----------- | ---------------------- | ------------ | ------------------- | -------------------- |
+| **Runtime** | 1.81 µs                | 1.06 µs      | 1.49 µs             | 1.25 µs              |
 
 #### TOOD
 
-// Profile single kernel vs double kernel approach
-// No atomic add for 0, warp scan, block scan
 // Coarsen along thresholds
+// Block write, privatization
 // Outlook, Intro
