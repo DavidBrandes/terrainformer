@@ -85,6 +85,7 @@ __global__ void marching_squares_part_1(compute::CGrid heights, int* __restrict_
   cuda::atomic_ref<int, cuda::thread_scope_device> segment_count_ref(*count);
   int global_count = segment_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
 
+  // TODO this should be refined
   if (local_count + global_count > max_count) {
     return;
   }
@@ -99,7 +100,7 @@ __global__ void marching_squares_part_1(compute::CGrid heights, int* __restrict_
 }
 
 __global__ void marching_squares_part_2(compute::CGrid heights, float4* __restrict__ contours, int count,
-                                        int2 const* __restrict__ tmp, float threshold) {
+                                        int2 const* __restrict__ tmp, float threshold, int offset) {
   int index = blockIdx.x * blockDim.x + threadIdx.x;
 
   if (index >= count) {
@@ -133,40 +134,44 @@ __global__ void marching_squares_part_2(compute::CGrid heights, float4* __restri
 
   case 1:
   case 14:
-    contours[index] = float4((float)col, row + linear_interpolation_factor(top_left, bottom_left, threshold),
-                             col + linear_interpolation_factor(bottom_left, bottom_right, threshold), (float)(row + 1));
+    contours[index + offset] =
+        float4((float)col, row + linear_interpolation_factor(top_left, bottom_left, threshold),
+               col + linear_interpolation_factor(bottom_left, bottom_right, threshold), (float)(row + 1));
     break;
 
   case 2:
   case 13:
-    contours[index] = float4(col + linear_interpolation_factor(bottom_left, bottom_right, threshold), (float)(row + 1),
-                             (float)(col + 1), row + linear_interpolation_factor(top_right, bottom_right, threshold));
+    contours[index + offset] =
+        float4(col + linear_interpolation_factor(bottom_left, bottom_right, threshold), (float)(row + 1),
+               (float)(col + 1), row + linear_interpolation_factor(top_right, bottom_right, threshold));
     break;
 
   case 3:
   case 12:
-    contours[index] = float4((float)col, row + linear_interpolation_factor(top_left, bottom_left, threshold),
-                             (float)(col + 1), row + linear_interpolation_factor(top_right, bottom_right, threshold));
+    contours[index + offset] =
+        float4((float)col, row + linear_interpolation_factor(top_left, bottom_left, threshold), (float)(col + 1),
+               row + linear_interpolation_factor(top_right, bottom_right, threshold));
     break;
 
   case 4:
   case 11:
-    contours[index] = float4(col + linear_interpolation_factor(top_left, top_right, threshold), (float)row,
-                             (float)(col + 1), row + linear_interpolation_factor(top_right, bottom_right, threshold));
+    contours[index + offset] =
+        float4(col + linear_interpolation_factor(top_left, top_right, threshold), (float)row, (float)(col + 1),
+               row + linear_interpolation_factor(top_right, bottom_right, threshold));
     break;
 
   case 5:
     if (inside) {
-      contours[index] = float4((float)col, row + linear_interpolation_factor(top_left, bottom_left, threshold),
-                               col + linear_interpolation_factor(top_left, top_right, threshold), (float)row);
-      contours[index + 1] =
+      contours[index + offset] = float4((float)col, row + linear_interpolation_factor(top_left, bottom_left, threshold),
+                                        col + linear_interpolation_factor(top_left, top_right, threshold), (float)row);
+      contours[index + offset + 1] =
           float4(col + linear_interpolation_factor(bottom_left, bottom_right, threshold), (float)(row + 1),
                  (float)(col + 1), row + linear_interpolation_factor(top_right, bottom_right, threshold));
     } else {
-      contours[index] =
+      contours[index + offset] =
           float4((float)col, row + linear_interpolation_factor(top_left, bottom_left, threshold),
                  col + linear_interpolation_factor(bottom_left, bottom_right, threshold), (float)(row + 1));
-      contours[index + 1] =
+      contours[index + offset + 1] =
           float4(col + linear_interpolation_factor(top_left, top_right, threshold), (float)row, (float)(col + 1),
                  row + linear_interpolation_factor(top_right, bottom_right, threshold));
     }
@@ -174,27 +179,30 @@ __global__ void marching_squares_part_2(compute::CGrid heights, float4* __restri
 
   case 6:
   case 9:
-    contours[index] = float4(col + linear_interpolation_factor(top_left, top_right, threshold), (float)row,
-                             col + linear_interpolation_factor(bottom_left, bottom_right, threshold), (float)(row + 1));
+    contours[index + offset] =
+        float4(col + linear_interpolation_factor(top_left, top_right, threshold), (float)row,
+               col + linear_interpolation_factor(bottom_left, bottom_right, threshold), (float)(row + 1));
     break;
 
   case 7:
   case 8:
-    contours[index] = float4((float)col, row + linear_interpolation_factor(top_left, bottom_left, threshold),
-                             col + linear_interpolation_factor(top_left, top_right, threshold), (float)row);
+    contours[index + offset] = float4((float)col, row + linear_interpolation_factor(top_left, bottom_left, threshold),
+                                      col + linear_interpolation_factor(top_left, top_right, threshold), (float)row);
     break;
 
   case 10:
     if (inside) {
-      contours[index] = float4(col + linear_interpolation_factor(top_left, top_right, threshold), (float)row,
-                               (float)(col + 1), row + linear_interpolation_factor(top_right, bottom_right, threshold));
-      contours[index + 1] =
+      contours[index + offset] =
+          float4(col + linear_interpolation_factor(top_left, top_right, threshold), (float)row, (float)(col + 1),
+                 row + linear_interpolation_factor(top_right, bottom_right, threshold));
+      contours[index + offset + 1] =
           float4((float)col, row + linear_interpolation_factor(top_left, bottom_left, threshold),
                  col + linear_interpolation_factor(bottom_left, bottom_right, threshold), (float)(row + 1));
     } else {
-      contours[index] = float4(col + linear_interpolation_factor(top_left, top_right, threshold), (float)row,
-                               (float)col, row + linear_interpolation_factor(top_left, bottom_left, threshold));
-      contours[index + 1] =
+      contours[index + offset] =
+          float4(col + linear_interpolation_factor(top_left, top_right, threshold), (float)row, (float)col,
+                 row + linear_interpolation_factor(top_left, bottom_left, threshold));
+      contours[index + offset + 1] =
           float4((float)(col + 1), row + linear_interpolation_factor(top_right, bottom_right, threshold),
                  col + linear_interpolation_factor(bottom_left, bottom_right, threshold), (float)(row + 1));
     }

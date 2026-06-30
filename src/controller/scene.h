@@ -3,7 +3,8 @@
 #include "app/state.h"
 #include "compute/resources.h"
 #include "utils/config.h"
-#include "utils/types.h"
+#include "utils/geometry.h"
+#include "utils/math.h"
 
 #include <vector>
 

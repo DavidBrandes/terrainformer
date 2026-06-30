@@ -3,7 +3,7 @@
 #include "app/requests.h"
 #include "app/state.h"
 #include "utils/config.h"
-#include "utils/types.h"
+#include "utils/grid.h"
 
 // Forward declaration to not include glfw3.h
 struct GLFWwindow;

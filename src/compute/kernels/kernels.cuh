@@ -1,6 +1,6 @@
 #pragma once
 
-#include "utils/types.h"
+#include "utils/grid.h"
 
 #include "compute/types.cuh"
 

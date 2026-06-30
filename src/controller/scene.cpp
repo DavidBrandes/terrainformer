@@ -3,25 +3,14 @@
 #include "app/state.h"
 #include "compute/compute.h"
 #include "utils/config.h"
+#include "utils/geometry.h"
 #include "utils/height_grid.h"
-#include "utils/types.h"
+#include "utils/math.h"
 
 #include <algorithm>
 #include <vector>
 
 namespace {
-std::vector<float> compute_thresholds(Config const& config) {
-  std::vector<float> thresholds;
-
-  for (int i = 0; i < config.scene.contourCount; ++i) {
-    // We do not want any thresholds at the bounds
-    float t = static_cast<float>(i + 1) / static_cast<float>(config.scene.contourCount + 1);
-    float threshold = HeightGrid::HEIGHT_RANGE.min + t * HeightGrid::HEIGHT_RANGE.span();
-    thresholds.push_back(threshold);
-  }
-
-  return thresholds;
-}
 
 bool is_active(ApplicationState const& state) {
   if (state.tool.activeTool == ToolState::Tool::NONE) {
@@ -52,7 +41,7 @@ SceneController::SceneController(Config const& config)
       std::min({static_cast<float>(_gridSize.width), static_cast<float>(_gridSize.height), _effectRadius.max});
   float max_radius = static_cast<float>(min_grid_dim - 1) / 2;
   _radiusRange = std::min(max_radius, _effectRadius.max) - _effectRadius.min;
-  _thresholds = compute_thresholds(config);
+  _thresholds = linspace(HeightGrid::HEIGHT_RANGE, config.scene.contourCount, Bounds::EXCLUDE);
 }
 
 void SceneController::updateCropState(ApplicationState& state) const {

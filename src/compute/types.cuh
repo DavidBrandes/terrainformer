@@ -1,6 +1,8 @@
 #pragma once
 
-#include "utils/types.h"
+#include "utils/geometry.h"
+#include "utils/grid.h"
+#include "utils/math.h"
 
 namespace compute {
 

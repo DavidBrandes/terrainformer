@@ -1,6 +1,7 @@
 #include "compute/compute.h"
+#include "utils/grid.h"
 #include "utils/height_grid.h"
-#include "utils/types.h"
+#include "utils/math.h"
 
 #include <driver_types.h>
 
@@ -16,6 +17,9 @@ constexpr GridConfig::PerlinNoiseConfig PERLIN_NOISE_GRID_CONFIG{
     .seed = 42, .frequency = 6, .octaves = 4, .persistence = 0.5};
 constexpr Size SIZE{.width = 8000, .height = 4000};
 constexpr GridConfig GRID_CONFIG{.size = SIZE, .initialization = PERLIN_NOISE_GRID_CONFIG};
+constexpr int THRESHOLD_COUNT = 100;
+constexpr Range THRESHOLD_RANGE{.min = -0.6, .max = 0.6};
+constexpr float MAX_COUNT_FRACTION = 0.01;
 
 void launch_smoothstep() {
   HeightGrid height_grid = make_height_grid(GRID_CONFIG);
@@ -44,42 +48,54 @@ void launch_marching_squares() {
   GpuBuffer<float> height_grid_buffer = make_gpu_buffer(height_grid);
   compute::CGrid c_heights{.values = height_grid_buffer.data, .size = SIZE};
 
-  GpuBuffer<float4> contour_buffer{(height_grid.size.width - 1) * (height_grid.size.height - 1) * 2};
+  int possible_contours_per_threshold = (height_grid.size.width - 1) * (height_grid.size.height - 1) * 2;
+  int max_contours_per_threshold = static_cast<int>(possible_contours_per_threshold * MAX_COUNT_FRACTION);
+
+  GpuBuffer<float4> contour_buffer{max_contours_per_threshold * THRESHOLD_COUNT};
+
   GpuBuffer<int> count_buffer{1};
-  cudaMemset(count_buffer.data, 0, sizeof(int));
+  cudaMemset(count_buffer.data, 0, count_buffer.bytes());
 
-  float threshold = 0;
+  GpuBuffer<int2> tmp_coordinates_buffer{max_contours_per_threshold};
 
-  GpuBuffer<int2> tmp_coordinates_buffer{contour_buffer.size};
+  std::vector<float> thresholds = linspace(THRESHOLD_RANGE, THRESHOLD_COUNT, Bounds::INCLUDE);
 
   auto setup = [&]() {
-    cudaMemset(count_buffer.data, 0, sizeof(int));
-    cudaMemset(contour_buffer.data, 0, contour_buffer.size * sizeof(float4));
-    cudaMemset(tmp_coordinates_buffer.data, 0, tmp_coordinates_buffer.size * sizeof(int2));
+    cudaMemset(count_buffer.data, 0, count_buffer.bytes());
+    cudaMemset(contour_buffer.data, 0, contour_buffer.bytes());
+    cudaMemset(tmp_coordinates_buffer.data, 0, tmp_coordinates_buffer.bytes());
   };
 
-  auto post = [&](std::string title) {
-    int count;
+  auto func = [&]() {
+    int offset = 0;
 
-    cudaMemcpy(&count, count_buffer.data, sizeof(int), cudaMemcpyDeviceToHost);
+    for (float threshold : thresholds) {
+      cudaMemset(count_buffer.data, 0, count_buffer.bytes());
 
-    dim3 block_dim(256);
-    dim3 grid_dim(compute::ceil_div(count, block_dim.x));
-    perf::marching_squares_part_2<<<grid_dim, block_dim>>>(c_heights, contour_buffer.data, count,
-                                                           tmp_coordinates_buffer.data, threshold);
+      dim3 block_dim_1(16, 16);
+      dim3 grid_dim_1(compute::ceil_div(SIZE.width - 1, block_dim_1.x),
+                      compute::ceil_div(SIZE.height - 1, block_dim_1.y));
+      perf::marching_squares_part_1<<<grid_dim_1, block_dim_1>>>(
+          c_heights, count_buffer.data, max_contours_per_threshold, tmp_coordinates_buffer.data, threshold);
 
-    plot(height_grid_buffer.toVector(), SIZE, contour_buffer.toVector(), title);
-  };
+      int count;
 
-  auto dflt = [&]() {
-    dim3 block_dim(16, 16);
-    dim3 grid_dim(compute::ceil_div(SIZE.width - 1, block_dim.x), compute::ceil_div(SIZE.height - 1, block_dim.y));
-    perf::marching_squares_part_1<<<grid_dim, block_dim>>>(c_heights, count_buffer.data, contour_buffer.size,
-                                                           tmp_coordinates_buffer.data, threshold);
+      cudaMemcpy(&count, count_buffer.data, sizeof(int), cudaMemcpyDeviceToHost);
+      printf("Threshold: %f; Count %d\n", threshold, count);
+
+      dim3 block_dim_2(256);
+      dim3 grid_dim_2(compute::ceil_div(count, block_dim_2.x));
+      perf::marching_squares_part_2<<<grid_dim_2, block_dim_2>>>(c_heights, contour_buffer.data, count,
+                                                                 tmp_coordinates_buffer.data, threshold, offset);
+
+      offset += count;
+    }
+    printf("Total %d\n", offset);
   };
 
   setup();
-  dflt();
+  func();
+  plot(height_grid_buffer.toVector(), SIZE, contour_buffer.toVector());
 }
 
 } // namespace perf

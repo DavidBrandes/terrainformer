@@ -1,6 +1,7 @@
 #include "graphics/layers/circle.h"
 
 #include <cmath>
+#include <numbers>
 #include <vector>
 
 namespace {
@@ -10,7 +11,8 @@ std::vector<float> generate_unit_circle() {
   vertices.reserve(CircleLayer::CIRCLE_SEGMENTS * 2); // 1 vertex per segment, 2 floats per vertex
 
   for (int i = 0; i < CircleLayer::CIRCLE_SEGMENTS; ++i) {
-    float angle = (static_cast<float>(i) / static_cast<float>(CircleLayer::CIRCLE_SEGMENTS)) * 2.0f * PI;
+    float angle =
+        (static_cast<float>(i) / static_cast<float>(CircleLayer::CIRCLE_SEGMENTS)) * 2.0f * std::numbers::pi_v<float>;
     float cos_a = std::cos(angle);
     float sin_a = std::sin(angle);
 

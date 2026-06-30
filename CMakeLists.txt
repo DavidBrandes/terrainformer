@@ -84,6 +84,7 @@ set(LIB_SOURCES
     src/graphics/layers/map.cpp
     src/utils/height_grid.cpp
     src/utils/config.cpp
+    src/utils/math.cpp
     src/compute/compute.cu
     src/compute/resources.cu
     src/compute/mapped_resources.cu

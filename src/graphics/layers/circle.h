@@ -1,6 +1,6 @@
 #pragma once
 
-#include "utils/types.h"
+#include "utils/geometry.h"
 
 #include <glad/gl.h>
 

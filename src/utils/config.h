@@ -1,6 +1,7 @@
 #pragma once
 
-#include "utils/types.h"
+#include "utils/grid.h"
+#include "utils/math.h"
 
 #include <cstdint>
 #include <variant>

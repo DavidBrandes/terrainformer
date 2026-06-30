@@ -5,6 +5,7 @@
 #include <PerlinNoise.hpp>
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 
 namespace {
 
@@ -26,7 +27,7 @@ HeightGrid make_sinusoidal_height_grid(Size size, GridConfig::SinusoidalConfig c
   float offset = HeightGrid::HEIGHT_RANGE.midpoint();
   float scale = config.amplitude * HeightGrid::HEIGHT_RANGE.span() / 2;
   float normalization_factor = std::min(static_cast<float>(size.width), static_cast<float>(size.height)) - 1;
-  float factor = 2 * PI * config.frequency;
+  float factor = 2 * std::numbers::pi_v<float> * config.frequency;
 
   for (int i = 0; i < size.height; ++i) {
     for (int j = 0; j < size.width; ++j) {

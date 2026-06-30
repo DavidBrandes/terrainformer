@@ -1,7 +1,8 @@
 #pragma once
 
 #include "compute/resources.h"
-#include "utils/types.h"
+#include "utils/geometry.h"
+#include "utils/grid.h"
 
 #include <vector>
 

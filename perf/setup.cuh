@@ -1,7 +1,8 @@
 #pragma once
 
+#include "utils/geometry.h"
+#include "utils/grid.h"
 #include "utils/height_grid.h"
-#include "utils/types.h"
 
 #include <iomanip>
 #include <iostream>
@@ -46,6 +47,8 @@ struct GpuBuffer {
 
     return vec;
   }
+
+  int bytes() const { return size * sizeof(T); }
 
   T* data;
   int size;
