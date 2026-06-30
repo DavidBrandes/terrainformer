@@ -101,7 +101,7 @@ This algorithm may be viewed as a combination of a convolution and an (unstable)
 
 A simple solution to deal with this dynamic output would be to have each $2\times2$ subgrid always produce its maximal amount of output segments, setting the unused ones to `NaN` or some values outside the displayed area. However, that would take away a lot of the challenges for optimizing the kernel and what we are actually interested in. Plus, a kernel that yields only as many output segments as actually required gives a nice general solution and takes away work from the shader that renders them.
 
-As before, we start with a naive implementation and will work our way towards a more performant version. We choose a block size of $16\times16$, use no shared memory and write the segments to an output buffer indexed via a grid scoped atomic counter. For the underlying height grid we again choose a size of $8000\times4000$. We also compute the contours for each threshold level sequentially one after another.
+As before, we start with a naive implementation and will work our way towards a more performant version. We choose a block size of $16\times16$, use no shared memory and write the segments to an output buffer indexed via a grid scoped atomic counter. For the underlying height grid we again choose a size of $8000\times4000$. For now, we compute the contours only for a single threshold sitting right at the middle of the height grid's range. Later on, we will also look at the case of multiple thresholds.
 
 #### Analysis
 
@@ -116,7 +116,7 @@ Let us take a look at the computational intensity of this kernel. Since the amou
 
 We can already notice that in this naive implementation, the kernel is heavily memory bound, even more so than the previous *smoothstep kernel*. Further we see that the computational intensity differs by quite a bit across the various output conditions.
 
-To get a feeling about the frequency, with which we can expect each of these 3 cases to arise, we launch the kernel on very regular sinusoidal grid and two variations of Perlin noise (one producing very turbulent and the other more gentle terrain). We also let the contour thresholds vary between the range of possible values. When counting the occurrence of each case, we notice a very skewed distribution which we show in the below table.
+To get a feeling for the frequency with which we can expect each of these three cases to arise, we launch the kernel across several grid configurations. In particular, we look into three categories: regular sinusoidal grids, and two groups of Perlin noise, one producing more gentle and the other more turbulent terrain. For each category we vary parameters and contour threshold across their respective ranges. The distribution of the three output cases for each category is displayed in the below table. The output is quite revealing. We observe a very skewed distribution as for most $2\times2$ subgrids, we won't be doing any computation at all. Only rarely, a subgrid will actually produce an output segment and two are rarer still.
 
 |                            | 0 Segments | 1 Segment | 2 Segments |
 | -------------------------- | ---------- | --------- | ---------- |
@@ -124,7 +124,12 @@ To get a feeling about the frequency, with which we can expect each of these 3 c
 | **Gentle Perlin Noise**    | ~99.8%     | ~0.2%     | ~0%        |
 | **Turbulent Perlin Noise** | ~99.1%     | ~0.89%    | ~0.01%     |
 
-The output is quite revealing. For most $2\times2$ subgrids, we won't be doing any computation at all. Only rarely, a subgrid will actually produce an output segment and two are rarer still. As a grid initialized with gentle Perlin noise appears to be the more interesting and realistic case, we will use it to continue with our profiling.
+As a grid initialized with gentle Perlin noise appears to be the more interesting and realistic case, we will use it to continue with our profiling (parameters: octaves 4, frequency 6, persistence 0.5). Since this grid produces most of its segments close to the midpoint of its height range, we choose this midpoint as our contour threshold. At this threshold, our selected initialization produces only 0 and 1, but no 2, output segments per $2\times2$ subgrid. The actual counts are shown below.
+
+|                | 0 Segments | 1 Segment | 2 Segments |
+| -------------- | ---------- | --------- | ---------- |
+| **Count**      | 31,853,485 | 134,516   | 0          |
+| **Occurrence** | ~99.6%     | ~0.4%     | 0%         |
 
 #### Using vector stores for the output
 In its basic implementation, the performance of our kernel is quite poor. We measure a runtime of 2.76 ms on our $8000\times4000$ profiling grid. However there is an easy win waiting for us. Each contour segment consists of two $(x, y)$ start and end points, which maps naturally onto a single `float4` vector.
@@ -136,7 +141,7 @@ With the naive single-kernel implementation, we can expect warp divergence to be
 
 Instead of computing the contours in a single pass, we can split our kernel into two. The first kernel checks each grid cell for the presence of a contour segment. If one is found, the cell's grid indices are written to a temporary buffer (using `int2`'s for convenience). As in the basic implementation, the output slot is determined by atomically increasing a global counter. The second kernel then reads each such index pair, computes the corresponding contour segment, and writes it, reusing the same index, to the final contour buffer.
 
-To profile this modified setup, we need to switch to CUDA events as opposed to `ncu`, the profiling tool that we've used so far. Because `ncu` introduces profiling overhead by its nature and may rerun kernels several times to gather all information, the reported runtimes may differ from those measured with CUDA events and are typically higher. The conclusions we make about the relative kernel runtimes, however, hold regardless.
+To profile this modified setup, we need to switch to CUDA events as opposed to Nsight Compute, the profiling tool that we've used so far. Because Nsight Compute introduces profiling overhead by its nature and may rerun kernels several times to gather all information, the reported runtimes may differ from those measured with CUDA events and are typically higher. The conclusions we make about the relative kernel runtimes, however, hold regardless.
 
 CUDA events allow us to capture timings across multiple kernel launches, including any potential memory transfers in between. In our setup, we run each variant 1000 times after 10 warmup iterations and report the average runtime. Using this method, we observe an average runtime of 1429 µs for the current version of our kernel before applying any division.
 
@@ -161,7 +166,7 @@ Although this optimization reduces the runtime of the second kernel by approxima
 #### Reducing pressure on the atomic counter
 We need to find another way to optimize our kernels further. Looking at the warp stall statistics of the first, we observe a very high cycle count for *Stall Long Scoreboard*. This metric indicates that our kernel's warps spend a lot of their lifetime waiting on data from DRAM to arrive. This might be due to the kernel's general memory requirements but inspecting the code we actually see another culprit. Every thread increments the global atomic counter for the number of output segments, regardless of whether its increment is zero.
 
-All of these operations put a lot of pressure on the counter. After modifying the code to only increment the counter when a segment is actually produced, we find the above stall metric almost halved, now averaging only around 6 cycles. Consequently, the amount of *Eligible Warps Per Scheduler* is now increased by 73% to 1.53. Overall, reducing the contention on the atomic variable decreased the runtime of the first kernel from 1.81 µs to 1.06 µs.
+All of these operations put a lot of pressure on the counter. After modifying the code to only increment the counter when a segment is actually produced (an optimization nvcc cannot perform itself, as it may not elide atomic operations), we find the above stall metric almost halved, now averaging only around 6 cycles. Consequently, the amount of *Eligible Warps Per Scheduler* is now increased by 73% to 1.53. Overall, reducing the contention on the atomic variable decreased the runtime of the first kernel from 1.81 µs to 1.06 µs.
 
 We could try to go further, aggregate the increments, and only write to the counter once per warp/block. However, this does not give us much at this point. As we saw in the analysis, the case of having a grid vertex produce a contour segment is very rare. So rare that any synchronization actually degrades performance. We illustrate the runtime of the kernel variants in the below table.
 
@@ -169,8 +174,16 @@ We could try to go further, aggregate the increments, and only write to the coun
 | ----------- | ---------------------- | ------------ | ------------------- | -------------------- |
 | **Runtime** | 1.81 µs                | 1.06 µs      | 1.49 µs             | 1.25 µs              |
 
-#### TOOD
+#### Computing contours at multiple thresholds
+So far we computed our height grid's contours only at a single threshold. For our specific use case we, however, want to display contours at various thresholds. Our chosen threshold sits at the midpoint of the grid's height range. The further we move a threshold towards the range's bounds, the fewer output segments it will produce. The below table illustrates the amount of output segments for evenly spaced thresholds across the grid's height range. To profile the marching squares kernel in the multi-threshold setup, we will use 100 values, evenly spaced across the same range. This produces a total of 4,753,797 segments.
 
+|              | $-\frac{3}{5}$ | $-\frac{2}{5}$ | $-\frac{1}{5}$ | $0$     | $\frac{1}{5}$ | $\frac{2}{5}$ | $\frac{3}{5}$ |
+| ------------ | -------------- | -------------- | -------------- | ------- | ------------- | ------------- | ------------- |
+| **Segments** | 662            | 7,540          | 69,385         | 134,516 | 76,476        | 10,044        | 86            |
+
+We further make two assumptions: we will only know the exact number of thresholds at runtime (meaning we cannot place them into constant memory) and do not care about the ordering in which the output segments are produced. The latter opens the way for some optimizations as it loosens restrictions on how data should be stored. However, it also takes away the option to differentiate between contours at different thresholds, e.g. if we wanted to color each one differently.
+
+// Multiple thresholds
 // Coarsen along thresholds
 // Block write, privatization
 // Outlook, Intro
