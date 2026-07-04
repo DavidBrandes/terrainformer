@@ -4,6 +4,8 @@
 #include "utils/grid.h"
 #include "utils/height_grid.h"
 
+#include <driver_types.h>
+
 #include <iomanip>
 #include <iostream>
 #include <string_view>
@@ -41,6 +43,13 @@ struct GpuBuffer {
     return *this;
   }
 
+  static GpuBuffer<T> fromVector(std::vector<T> const& vec) {
+    GpuBuffer<T> buffer{static_cast<int>(vec.size())};
+    CUDA_CHECK(cudaMemcpy(buffer.data, vec.data(), buffer.bytes(), cudaMemcpyHostToDevice));
+
+    return buffer;
+  }
+
   std::vector<T> toVector() const {
     std::vector<T> vec(size);
     CUDA_CHECK(cudaMemcpy(vec.data(), data, size * sizeof(T), cudaMemcpyDeviceToHost));
@@ -57,9 +66,9 @@ struct GpuBuffer {
 GpuBuffer<float> make_gpu_buffer(HeightGrid const& height_grid);
 
 template <typename T = decltype([]() {}), typename U = decltype([]() {})>
-void benchmark(T&& func, U&& setup = []() {}) {
-  constexpr int warmup_iterations = 10;
-  constexpr int benchmark_iterations = 1000;
+void benchmark(T&& func, U&& setup = []() {}, cudaStream_t stream = 0) {
+  constexpr int warmup_iterations = 5;
+  constexpr int benchmark_iterations = 100;
 
   for (int i = 0; i < warmup_iterations; ++i) {
     setup();
@@ -77,9 +86,9 @@ void benchmark(T&& func, U&& setup = []() {}) {
   for (int i = 0; i < benchmark_iterations; ++i) {
     setup();
 
-    CUDA_CHECK(cudaEventRecord(start));
+    CUDA_CHECK(cudaEventRecord(start, stream));
     func();
-    CUDA_CHECK(cudaEventRecord(stop));
+    CUDA_CHECK(cudaEventRecord(stop, stream));
     CUDA_CHECK(cudaEventSynchronize(stop));
 
     float ms;

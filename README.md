@@ -143,7 +143,7 @@ Instead of computing the contours in a single pass, we can split our kernel into
 
 To profile this modified setup, we need to switch to CUDA events as opposed to Nsight Compute, the profiling tool that we've used so far. Because Nsight Compute introduces profiling overhead by its nature and may rerun kernels several times to gather all information, the reported runtimes may differ from those measured with CUDA events and are typically higher. The conclusions we make about the relative kernel runtimes, however, hold regardless.
 
-CUDA events allow us to capture timings across multiple kernel launches, including any potential memory transfers in between. In our setup, we run each variant 1000 times after 10 warmup iterations and report the average runtime. Using this method, we observe an average runtime of 1429 µs for the current version of our kernel before applying any division.
+CUDA events allow us to capture timings across multiple kernel launches, including any potential memory transfers in between. In our setup, we run each variant 100 times after 5 warmup iterations and report the average runtime. Using this method, we observe an average runtime of 1429 µs for the current version of our kernel before applying any division.
 
 In a first attempt, we launch the second kernel with the same amount of threads as there are potential contour lines, leaving the counter resident on the GPU. This yields a degraded runtime of 1551 µs (1137 µs for first and 414 µs in the second kernel). The second kernel wastes the vast majority of its threads doing nothing.
 
@@ -166,24 +166,63 @@ Although this optimization reduces the runtime of the second kernel by approxima
 #### Reducing pressure on the atomic counter
 We need to find another way to optimize our kernels further. Looking at the warp stall statistics of the first, we observe a very high cycle count for *Stall Long Scoreboard*. This metric indicates that our kernel's warps spend a lot of their lifetime waiting on data from DRAM to arrive. This might be due to the kernel's general memory requirements but inspecting the code we actually see another culprit. Every thread increments the global atomic counter for the number of output segments, regardless of whether its increment is zero.
 
-All of these operations put a lot of pressure on the counter. After modifying the code to only increment the counter when a segment is actually produced (an optimization nvcc cannot perform itself, as it may not elide atomic operations), we find the above stall metric almost halved, now averaging only around 6 cycles. Consequently, the amount of *Eligible Warps Per Scheduler* is now increased by 73% to 1.53. Overall, reducing the contention on the atomic variable decreased the runtime of the first kernel from 1.81 µs to 1.06 µs.
+All of these operations put a lot of pressure on the counter. After modifying the code to only increment the counter when a segment is actually produced (an optimization nvcc cannot perform itself, as it may not elide atomic operations), we find the above stall metric almost halved, now averaging only around 6 cycles. Consequently, the amount of *Eligible Warps Per Scheduler* is now increased by 73% to 1.53. Overall, reducing the contention on the atomic variable decreased the runtime of the first kernel from 1.81 ms to 1.06 ms.
 
 We could try to go further, aggregate the increments, and only write to the counter once per warp/block. However, this does not give us much at this point. As we saw in the analysis, the case of having a grid vertex produce a contour segment is very rare. So rare that any synchronization actually degrades performance. We illustrate the runtime of the kernel variants in the below table.
 
 |             | Write from each thread | Write if > 0 | Write once per warp | Write once per block |
 | ----------- | ---------------------- | ------------ | ------------------- | -------------------- |
-| **Runtime** | 1.81 µs                | 1.06 µs      | 1.49 µs             | 1.25 µs              |
+| **Runtime** | 1.81 ms                | 1.06 ms      | 1.49 ms             | 1.25 ms              |
 
 #### Computing contours at multiple thresholds
-So far we computed our height grid's contours only at a single threshold. For our specific use case we, however, want to display contours at various thresholds. Our chosen threshold sits at the midpoint of the grid's height range. The further we move a threshold towards the range's bounds, the fewer output segments it will produce. The below table illustrates the amount of output segments for evenly spaced thresholds across the grid's height range. To profile the marching squares kernel in the multi-threshold setup, we will use 100 values, evenly spaced across the same range. This produces a total of 4,753,797 segments.
+So far we computed our height grid's contours only at a single threshold. For our specific use case we, however, want to display contours at various thresholds. Our chosen threshold sits at the midpoint of the grid's height range. The further we move a threshold towards the range's bounds, the fewer output segments it will produce. The below table illustrates the amount of output segments for evenly spaced thresholds across the grid's height range. To profile the marching squares kernel in the multi-threshold setup, we will use 100 values, evenly spaced across the same range. This produces a total of 4,753,797 output segments.
 
 |              | $-\frac{3}{5}$ | $-\frac{2}{5}$ | $-\frac{1}{5}$ | $0$     | $\frac{1}{5}$ | $\frac{2}{5}$ | $\frac{3}{5}$ |
 | ------------ | -------------- | -------------- | -------------- | ------- | ------------- | ------------- | ------------- |
 | **Segments** | 662            | 7,540          | 69,385         | 134,516 | 76,476        | 10,044        | 86            |
 
-We further make two assumptions: we will only know the exact number of thresholds at runtime (meaning we cannot place them into constant memory) and do not care about the ordering in which the output segments are produced. The latter opens the way for some optimizations as it loosens restrictions on how data should be stored. However, it also takes away the option to differentiate between contours at different thresholds, e.g. if we wanted to color each one differently.
+We further make two assumptions: we will only know the exact number of thresholds at runtime (meaning we cannot place them into constant memory) and do not care about the ordering in which the output segments are produced. The latter opens the way for optimizations as it loosens restrictions on how data should be stored. However, it also takes away the option to differentiate between contours at different thresholds, e.g. if we wanted to color each one differently.
 
-// Multiple thresholds
-// Coarsen along thresholds
+#### Enabling parallelism across multiple thresholds
+What currently blocks us from computing contours at multiple thresholds in parallel is that we do not know which grid indices correspond to which threshold. From the first kernel, we currently save only the indices at which the second kernel then computes the contour segments. If we were to compute multiple thresholds in parallel, the second kernel would not know which threshold to use. Without any modifications, this leaves us naively computing the segments sequentially, one threshold after another.
+
+However, that would leave several optimizations underutilized. To enable them, we can create a second temporary output buffer, to which the first kernel stores the corresponding thresholds. Each element of this buffer corresponds to an index pair in the temporary vertex buffer. The second kernel then loads both buffers and is consequently able to identify a grid index pair together with its threshold.
+
+#### Three approaches to execute in parallel
+With this tweak, we are now able to launch the first kernel in batch for all thresholds simultaneously. Each launch is assigned to a dedicated CUDA stream, in which it can execute independently of the others. The second kernel then only has to run once, after all previous ones have finished.
+
+We are still left with quite some kernel launches. Even though we run them in parallel, the first kernel is launched 100 times. CUDA Graphs are a great way to speed up such a situation. Instead of launching each kernel individually from the host, we can capture the sequence of launches into a graph once and then replay this graph as a single unit for every subsequent call. This removes most of the CPU-side launch overhead that would otherwise accumulate.
+
+To avoid these multiple launches of the first kernel altogether, we can also vectorize them. If we make the thresholds a third dimension after the grid's height and width, we can launch a single kernel on a 3-dimensional grid and compute all thresholds together. This approach brings us back to two kernel launches, but now computing contours at multiple thresholds. The first, 3-dimensional kernel populates the temporary index and threshold buffers. The second kernel then computes the segments from these.
+
+As a consequence of this vectorization, we can no longer pass the thresholds directly as the first kernel's parameters. Since we only know the threshold count at runtime, this leaves us no option other than passing a pointer to them instead. Each thread then has to load its threshold dynamically at runtime.
+
+#### Comparing the four approaches
+The performance of these four approaches is reported in the table below. In the first row, we show the total runtime for each, spanning both the (potentially multiple) first kernel launches and the second kernel launch. As before, these times were measured using CUDA events and calculated as the average of 100 runs after 5 warmup iterations. In the second and third rows, we report the runtime of the first and second kernels respectively. These were measured using Nsight Compute, with a single threshold placed at the height grid's midpoint.
+
+|                   | Naive    | Batched  | Batched & CUDA Graphs | Vectorized |
+| ----------------- | -------- | -------- | --------------------- | ---------- |
+| **Combined**      | 86.86 ms | 95.61 ms | 87.26 ms              | 92.44 ms   |
+| **First Kernel**  | 1.04 ms  | 1.05 ms  | 1.05 ms               | 1.13 ms    |
+| **Second Kernel** | 0.05 ms  | 0.05 ms  | 0.05 ms               | 0.05 ms    |
+
+We observe an unexpected behavior. None of the modifications were actually able to improve the overall runtime. The processors are already busy computing contours at one threshold, so our effort to parallelize could not help much. Also, the batched version's additional DRAM storage and stream management overhead actually seem to be working against it. Using CUDA Graphs, we are able to make up for this somewhat, but still do not manage to outperform the naive implementation.
+
+The vectorized approach performs rather poorly as well. Even though it only launches two kernels, its runtime is worse than the naive version's. In particular, the added dependency of indirectly loading the thresholds seems to hurt the first kernel's performance. We can also see that the second kernel plays only a minor role in the overall setup.
+
+#### Coarsening the threads along the thresholds
+Despite its initially weak performance, we decide to continue with the vectorized implementation. Its shape gives us a huge advantage: the ability to coarsen threads along the new threshold dimension. Instead of having one thread compute segments at one $2\times2$ subgrid and one threshold, we can instead let it do so for multiple thresholds. The subgrid stays fixed and doesn't need to be reloaded throughout these computations. This saves us costly time, as the thread now only stalls once waiting for data from DRAM, instead of stalling for each threshold as in the un-coarsened version.
+
+We measured the runtimes of the vectorized kernel at various coarsening factors and show them in the table below. As before, we report them once for the individual kernels, measured with Nsight Compute, and once for their combination, measured with CUDA events. Starting already at a coarsening factor of two, we can see the runtime rapidly declining, outperforming the naive version considerably. Please note that before, we profiled the individual kernels at only one threshold, while now we do so for all 100, hence the difference in runtime.
+
+| Coarse Factor     | 1         | 2        | 4        | 8        | 16       | 32       | 64       | 128      |
+| ----------------- | --------- | -------- | -------- | -------- | -------- | -------- | -------- | -------- |
+| **Combined**      | 93.45 ms  | 59.58 ms | 42.61 ms | 34.78 ms | 30.81 ms | 28.31 ms | 27.37 ms | 25.69 ms |
+| **First Kernel**  | 137.02 ms | 84.28 ms | 61.28 ms | 53.98 ms | 50.56 ms | 48.98 ms | 47.84 ms | 47.29 ms |
+| **Second Kernel** | 1.73 ms   | 1.36 ms  | 1.13 ms  | 1.08 ms  | 1.07 ms  | 1.06 ms  | 1.06 ms  | 1.05 ms  |
+
+The reduced memory traffic really paid off. As a consequence, we observe the L1 and L2 cache hit rates increase by 28% and 95% respectively, when comparing the un-coarsened version to the version coarsened by a factor of 128. Interestingly, the second kernel also improved. This kernel loads the height grid's data from the grid indices that were stored in the temporary buffer by the first kernel. The closer together the data represented by these indices are, the more efficiently they can be loaded from DRAM. As a consequence of the thread blocks staying longer in one area of the height grid, we get less variance in the resulting index buffer. An increased memory throughput of approximately 64% across all layers confirms this optimized pattern.
+
+// Prefetching the thresholds
 // Block write, privatization
-// Outlook, Intro
+// Outlook, Intro, Code snippets
