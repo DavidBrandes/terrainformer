@@ -43,16 +43,18 @@ struct GpuBuffer {
     return *this;
   }
 
-  static GpuBuffer<T> fromVector(std::vector<T> const& vec) {
+  template <typename U = T>
+  static GpuBuffer<T> fromVector(std::vector<U> const& vec) {
     GpuBuffer<T> buffer{static_cast<int>(vec.size())};
     CUDA_CHECK(cudaMemcpy(buffer.data, vec.data(), buffer.bytes(), cudaMemcpyHostToDevice));
 
     return buffer;
   }
 
-  std::vector<T> toVector() const {
-    std::vector<T> vec(size);
-    CUDA_CHECK(cudaMemcpy(vec.data(), data, size * sizeof(T), cudaMemcpyDeviceToHost));
+  template <typename U = T>
+  std::vector<U> toVector() const {
+    std::vector<U> vec(size);
+    CUDA_CHECK(cudaMemcpy(vec.data(), data, bytes(), cudaMemcpyDeviceToHost));
 
     return vec;
   }

@@ -61,8 +61,9 @@ void launch_marching_squares() {
 
   std::vector<float> thresholds = linspace(THRESHOLD_RANGE, THRESHOLD_COUNT, Bounds::INCLUDE);
   GpuBuffer<float> thresholds_buffer = GpuBuffer<float>::fromVector(thresholds);
+  GpuBuffer<float4> thresholds4_buffer = GpuBuffer<float4>::fromVector(thresholds);
 
-  auto setup_coarsened = [&]() {
+  auto setup = [&]() {
     cudaMemset(count_buffer.data, 0, count_buffer.bytes());
     cudaMemset(contour_buffer.data, 0, contour_buffer.bytes());
     cudaMemset(tmp_coordinates_buffer.data, 0, tmp_coordinates_buffer.bytes());
@@ -86,11 +87,53 @@ void launch_marching_squares() {
                                                                tmp_coordinates_buffer.data, tmp_thresholds_buffer.data);
   };
 
-  benchmark(func_coarsened, setup_coarsened);
+  auto func_coarsened_block_load = [&]() {
+    dim3 block_dim_1(16, 16, 1);
+    dim3 grid_dim_1(compute::ceil_div(SIZE.width - 1, block_dim_1.x), compute::ceil_div(SIZE.height - 1, block_dim_1.y),
+                    compute::ceil_div(THRESHOLD_COUNT, block_dim_1.z * COARSE_FACTOR));
+    perf::marching_squares_part_1_block_load<<<grid_dim_1, block_dim_1>>>(
+        c_heights, count_buffer.data, max_contours_per_threshold * THRESHOLD_COUNT, tmp_coordinates_buffer.data,
+        thresholds_buffer.data, tmp_thresholds_buffer.data, THRESHOLD_COUNT);
 
-  // setup_coarsened();
-  // func_coarsened();
+    int count;
+    cudaMemcpy(&count, count_buffer.data, sizeof(int), cudaMemcpyDeviceToHost);
+
+    dim3 block_dim_2(256);
+    dim3 grid_dim_2(compute::ceil_div(count, block_dim_2.x));
+    perf::marching_squares_part_2<<<grid_dim_2, block_dim_2>>>(c_heights, contour_buffer.data, count,
+                                                               tmp_coordinates_buffer.data, tmp_thresholds_buffer.data);
+  };
+
+  auto func_coarsened_block_vector_load = [&]() {
+    dim3 block_dim_1(16, 16, 1);
+    dim3 grid_dim_1(compute::ceil_div(SIZE.width - 1, block_dim_1.x), compute::ceil_div(SIZE.height - 1, block_dim_1.y),
+                    compute::ceil_div(THRESHOLD_COUNT, block_dim_1.z * COARSE_FACTOR));
+    perf::marching_squares_part_1_block_vector_load<<<grid_dim_1, block_dim_1>>>(
+        c_heights, count_buffer.data, max_contours_per_threshold * THRESHOLD_COUNT, tmp_coordinates_buffer.data,
+        thresholds4_buffer.data, tmp_thresholds_buffer.data, THRESHOLD_COUNT / 4);
+
+    int count;
+    cudaMemcpy(&count, count_buffer.data, sizeof(int), cudaMemcpyDeviceToHost);
+
+    dim3 block_dim_2(256);
+    dim3 grid_dim_2(compute::ceil_div(count, block_dim_2.x));
+    perf::marching_squares_part_2<<<grid_dim_2, block_dim_2>>>(c_heights, contour_buffer.data, count,
+                                                               tmp_coordinates_buffer.data, tmp_thresholds_buffer.data);
+  };
+
+  // benchmark(func_coarsened, setup_coarsened);
+
+  setup();
+  func_coarsened();
   // plot(height_grid_buffer.toVector(), SIZE, contour_buffer.toVector(), "coarsened");
+
+  setup();
+  func_coarsened_block_load();
+  // // plot(height_grid_buffer.toVector(), SIZE, contour_buffer.toVector(), "load");
+
+  setup();
+  func_coarsened_block_vector_load();
+  // // plot(height_grid_buffer.toVector(), SIZE, contour_buffer.toVector(), "vector-load");
 }
 
 } // namespace perf
