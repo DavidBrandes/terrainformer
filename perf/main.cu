@@ -31,7 +31,7 @@ void launch_smoothstep() {
   float brush_dab_radius = radius_from_normalized(SIZE);
   BrushDab brush_dab = make_brush_dab(brush_dab_center, brush_dab_radius);
 
-  compute::Region region = compute::aligned_brush_dab_region(brush_dab, SIZE);
+  Region region = compute::aligned_brush_dab_region(brush_dab, SIZE);
 
   dim3 block_dim(8, 32);
   dim3 grid_dim(compute::ceil_div(region.size.width, 4 * block_dim.x),

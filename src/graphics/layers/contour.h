@@ -4,8 +4,6 @@
 
 #include <glad/gl.h>
 
-#include <vector>
-
 class ContourLayer {
 public:
   ContourLayer(Config const& config, HeightGrid const& height_grid);
@@ -20,18 +18,14 @@ public:
   GLuint vao() const { return _vao; }
   GLuint vbo() const { return _vbo; }
 
-  void update(std::vector<int>&& offsets);
+  void update(int count);
 
-  std::vector<GLsizei> const& offsets() const { return _offsets; }
-  std::vector<float> const& gradients() const { return _gradients; }
   int count() const { return _count; }
-  int maxSegments() const { return _maxSegments; }
+  int maxCount() const { return _maxCount; }
 
 private:
   GLuint _vao;
   GLuint _vbo;
-  std::vector<GLsizei> _offsets;
-  std::vector<float> _gradients;
   int _count;
-  int _maxSegments;
+  int _maxCount;
 };

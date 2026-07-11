@@ -20,7 +20,7 @@ MappedGpuResources::MappedGpuResources(std::shared_ptr<GpuResources> parent) : _
 Segments MappedGpuResources::contours() const {
   return Segments{.segments = _contourSegments,
                   .count = _parent->_contourSegmentCount,
-                  .maxCount = _parent->_scene->contour.maxSegments()};
+                  .maxCount = _parent->_scene->contour.maxCount()};
 }
 
 ConstrainedGrid MappedGpuResources::heights() const {

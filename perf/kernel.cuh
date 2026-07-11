@@ -8,9 +8,7 @@
 namespace perf {
 
 constexpr int COARSE_FACTOR = 32;
-constexpr int SMOOTHSTEP_COARSE_FACTOR = 4;
 
-__global__ void smoothstep(compute::Grid heights, Range height_range, BrushDab brush_dab, compute::Vertex offset);
 __global__ void marching_squares_part_1(compute::CGrid heights, int* __restrict__ count, int max_count,
                                         int2* __restrict__ tmp_coordinates, float const* __restrict__ thresholds,
                                         float* __restrict__ tmp_thresholds, int threshold_count);

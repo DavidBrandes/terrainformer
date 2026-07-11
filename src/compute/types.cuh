@@ -6,18 +6,6 @@
 
 namespace compute {
 
-struct Vertex {
-  int col;
-  int row;
-};
-
-struct Region {
-  Vertex origin;
-  Size size;
-
-  bool empty() const { return size.empty(); }
-};
-
 struct Segment {
   Point start;
   Point end;

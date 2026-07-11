@@ -99,7 +99,7 @@ void SceneController::shift(std::shared_ptr<compute::GpuResources>& resources, A
   compute::Result result = modify_height(resources->map(), brush_dab, _thresholds);
 
   if (result.modified) {
-    resources->scene()->contour.update(std::move(result.contourOffsets));
+    resources->scene()->contour.update(result.contourSegmentCount);
   }
 }
 
@@ -130,6 +130,6 @@ void SceneController::initialize(std::shared_ptr<compute::GpuResources> resource
   compute::Result result = compute_contour(resources->map(), _thresholds);
 
   if (result.modified) {
-    resources->scene()->contour.update(std::move(result.contourOffsets));
+    resources->scene()->contour.update(result.contourSegmentCount);
   }
 }

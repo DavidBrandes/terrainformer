@@ -98,14 +98,7 @@ void Renderer::renderContours(ContourLayer const& contours) {
   glLineWidth(CONTOUR_LINE_WIDTH);
   glBindVertexArray(contours.vao());
 
-  GLint last_offset = 0;
-
-  for (size_t i = 0; i < static_cast<size_t>(contours.count()); ++i) {
-    glUniform1f(_contourTLoc, contours.gradients().at(i));
-    // We need a x2 to get the actual vertex count
-    glDrawArrays(GL_LINES, last_offset, 2 * contours.offsets().at(i) - last_offset);
-    last_offset = 2 * contours.offsets().at(i);
-  }
+  glDrawArrays(GL_LINES, 0, contours.count() * 2); // Two (x, y) points per segment
 }
 
 void Renderer::renderMap(MapLayer const& map) {

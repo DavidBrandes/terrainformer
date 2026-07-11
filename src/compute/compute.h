@@ -12,7 +12,7 @@ class MappedGpuResources;
 
 struct Result {
   bool modified;
-  std::vector<int> contourOffsets;
+  int contourSegmentCount;
 };
 
 Result compute_contour(std::shared_ptr<MappedGpuResources> resources, std::vector<float> const& thresholds);
