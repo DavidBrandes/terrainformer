@@ -8,7 +8,7 @@
 - A C++20-compatible compiler
 - CUDA Toolkit
 - OpenGL 3.3-compatible drivers
-- 
+
 ## Usage
 The application can be run with `make run` and configured via `config.toml`. Use the following controls to interact with the application:
 
@@ -52,49 +52,189 @@ The profiling and optimization was performed on an NVIDIA RTX 2000 Ada Generatio
 
 #### Overview
 
-To warm up, we start with the relatively simple [smoothstep](src/compute/kernels/smoothstep.cu) kernel. This element wise kernel is used by the application on a circular region of radius $r$ around the user's click position $c$ on the height grid. It modifies a grid's vertex $v$ with height $h_v$ and distance $d_v=\Vert{v - c}\Vert_2$ to the click position $c$ by an amount $m_v$, which we compute as
+To warm up, we start with the relatively simple [smoothstep](src/compute/kernels/smoothstep.cu) kernel. This element wise kernel is used by the application on a circular region of radius $r$ around the user's click position $c$ on the underlying height grid. It modifies a grid's vertex $v$ with height $h_v$ and distance $d_v=\Vert{v - c}\Vert_2$ to the click position $c$ by an amount $m_v$, which we compute as
 $$
 m_v = 3\alpha f_v^2 - 2\alpha f_v^3 ,\quad\text{where }
 f_v = \begin{cases} 1 - \frac{d_v}{r}, & d_v < r \\ 0, & d_v \geq r\end{cases}\text{ and }\alpha \in \mathbb{R}.
 $$
-The value $\alpha$ is a scaling factor which controls by how much and in which direction the height should be modified. 
+The value $\alpha$ is a scaling factor which controls how much, and in which direction, the height is modified. 
 
-Each click  iteratively updates the height grid as $
+Each click iteratively updates the height grid as $
 h_v^i=h_v^{i-1}+m_v^i$, where $h_v^i$ and $m_v^i$ denote the height and modification of vertex $v$ after the $i$-th click, respectively. Notice how vertices outside the radius $r$ are unaffected, as $f_v=0$ implies $m_v=0$.
 
-To benchmark this kernel, we simulate a click centered on a grid of $8000\times4000$ vertices with a radius of half the grid's height. We start profiling with a naive kernel implementation that computes one vertex per thread and uses blocks of size $16\times16$. From there, we work toward a more performant variation.
+To benchmark this kernel, we simulate a click centered on a grid of width $8000$ and height $4000$ vertices with a radius of half the grid's height. We start the profiling journey with a naive kernel implementation that computes one vertex per thread and uses blocks of size $16\times16$. From there on, we will work toward more performant variations.
 
-#### Roofline Analysis
+```C++
+__global__ void smoothstep(float* heights, Size grid_size, Range height_range, BrushDab brush_dab) {
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
 
-Already, we can see that in this naive implementation, most threads don't do any work. Their corresponding vertices lie outside the click's effect radius and hence will evaluate to a modification $m_v$ of $0$. In particular, we can estimate that only a fraction of $\pi r^2/8r^2\approx 0.39$ of all threads will be doing useful work.
+    int index = row * grid_size.width + col;
+    
+    if (col < grid_size.width && row < grid_size.height) {
+        float x_diff = (float)col - brush_dab.x;
+        float y_diff = (float)row - brush_dab.y;
 
-We can also estimate the kernel's theoretical performance. For a vertex whose height is modified, computing $f_v, m_v$ and the height update requires 16 floating point operations. Compared to one load and one store totalling 8 bytes, this gives a computational intensity of $2\frac{\text{FLOP}}{\text{B}}$.
+        float distance = sqrtf(powf(x_diff, 2) + powf(y_diff, 2));
 
-Even though the achievable computational throughput is significantly lower than the reported 12 TFLOPS (NCU reports a ceiling of ~5.7 TFLOPS, possibly due to thermal throttling), this kernel is clearly memory bound. Taking the measured 5.7 TFLOPS as reference, even a perfect kernel would use only ~9% of the GPU's compute capacity.
+        float height = heights[index];
+        float factor = 1 - distance / brush_dab.radius;
+        height += (3 * powf(factor, 2) - 2 * powf(factor, 3)) * brush_dab.intensity;
+        // clamp the height into the grid's allowed value range
+        height = fmaxf(height_range.min, fminf(height_range.max, height)); 
 
-#### Avoiding powf
+        if (distance < brush_dab.radius) {
+            heights[index] = height;
+        }
+    }
+}
+```
 
-A simple, but very impactful optimization is to replace `powf` with explicit multiplication for computing squares and cubes. Unlike the explicit products, `powf` does not optimize integer exponents and generates significantly more instructions. This single change reduces issued instructions from 218,676,401 to 40,655,248.
+#### Roofline analysis
+Looking at the code, we can already see that in this naive implementation, most threads won't be doing any work at all. Since their corresponding vertices lie outside the click's effect radius, the modification $m_v$ will evaluate to $0$ and hence the condition `if (distance < brush_dab.radius)` will not be satisfied. In particular, we can compute that only approximately $\pi r^2/8r^2 \approx 0.39$ of all threads will be doing useful work.
 
-#### Restricting the kernel
+We can also analyze the kernel's theoretical performance. For a vertex whose height is modified, computing $f_v, m_v$ and the height update requires 16 floating point operations (taking `powf`, `sqrtf` and clamping each as one FLOP). Compared to one load and one store totalling 8 bytes, this gives a computational intensity of $2\frac{\text{FLOP}}{\text{B}}$. Even though the achievable computational throughput on our GPU is significantly lower than the reported 12 TFLOPS (NCU shows a ceiling of ~5.7 TFLOPS, possibly due to thermal throttling), this kernel is clearly memory bound. Using the measured compute ceiling of 5.7 TFLOPS and reported bandwidth of 238.4 GiB/s, even a perfect kernel would use only ~9% of the GPU's compute capacity.
 
-The next optimization is to restrict the kernel launch to the bounding square of side length $2r$ enclosing the click circle. This avoids computation on vertices that are guaranteed to be unaffected and reduces the kernel's runtime from 785 µs to 571 µs, increasing the fraction of threads doing useful work from 0.39 to $\pi r^2/4r^2 \approx 0.79$.
+#### Replacing powf with explicit multiplication
 
-Since there are no cross dependencies between the vertices in our grid and we are mostly memory bound, we cannot do much except optimizing access to memory. Switching the existing block configuration of $16\times16$ threads to $32×8$, we observe a slight improvement in performance. Swapping this configuration to $8\times32$ and adding in vector loads along the rows, we are down to a runtime of 541 µs. 
+A simple, but very impactful, first optimization is to replace `powf` with explicit multiplication wherever we currently are computing squares and cubes. Unlike the explicit products, `powf` does not optimize integer exponents and generates significantly more instructions. This small change single handedly reduces issued instructions from 293,805,820 down to 55,979,098.
 
-This configuration gives us a square access of $32\times32$ elements per block, which, for specific brush radii, will give us the minimal amount of blocks required to cover the entire click's circle. We observe an increased throughput of between 29% and 70% in L1, L2 and DRAM when compared to an unvectorized implementation. We now utilize memory bandwidth at 92% and get more active warps on average. 
+```C++
+float distance = sqrtf(x_diff * x_diff + y_diff * y_diff);
+height += factor * factor * (3 - 2 * factor) * brush_dab.intensity;
+```
 
-Using `float4` loads and stores, we effectively coarsen the kernel. This gives each thread more work and keeps it busy while others wait on their data to arrive, all while issuing fewer memory instructions than an unvectorized implementation. This modification brings us very close to what can be achieved with the GPU. Using the stated memory bandwidth of 256 GB/s, an optimal kernel would take 500 µs for the grid of $4000\times4000$ elements (considering both loads and stores).
+#### Hoisting the radius check
+
+Another straightforward modification, which brings issued instructions further down to 39,837,711, is to move the distance check `if (distance < brush_dab.radius)` further upwards. This modifies the kernel to only perform the heavy computations and memory load if its threads lie inside the height brush's circle. We are unsure why NVCC did not perform this optimization by itself right away, since such a tweak appears rather plausible to us. Using Nsight Compute, we measure the runtime of the kernel adapted this way at 763 µs.
+
+```C++
+float x_diff = (float)col - brush_dab.x;
+float y_diff = (float)row - brush_dab.y;
+
+float distance = sqrtf(x_diff * x_diff + y_diff * y_diff);
+
+if (distance < brush_dab.radius) {
+    float height = heights[index];
+
+    // Continue..
+}
+```
+
+#### Avoiding unnecessary square root computations
+After our previous success replacing `powf` with a simpler instruction, we might be tempted to do something similar with the `sqrtf` occurring in the distance computation. Ultimately the distance's square root is only needed inside the branch when computing the factor. Threads outside the brush circle could equally compare their squared distance $d_v^2$ against the squared radius $r^2$. Only when this condition holds do we need to take its root. The squared radius is fixed throughout the kernel's lifetime and can be passed along with its parameters.
+
+```C++
+float distance_sq = x_diff * x_diff + y_diff * y_diff;
+if (distance_sq < brush_dab.radius_sq) {
+    float distance = sqrtf(distance_sq);
+    float factor = 1 - distance / brush_dab.radius;
+
+    // Continue..
+}
+```
+
+Testing it out, we however observe only a minor performance increase. While issued instructions are down by 15%, the kernel's runtime improved only by 4%. On modern GPUs, taking the square root is rather cheap and pretty optimized with dedicated special function units. So unfortunately we could not get an easy win as before. Having the upcoming optimization from the subsequent chapter already in mind, this effect will be even less pronounced. Considering the only minor performance gain but bloated function signature, we decide not to pursue this optimization any further.
+
+#### Restricting the kernel to the brush's bounding square
+
+We already noticed how, due to the height brush's nature, most threads won't be doing any work. To keep these numbers lower, we can restrict the kernel launch to only the bounding square of side length $2r$, minimally enclosing the height brush's click circle. This avoids computation on vertices that are guaranteed to be unaffected and reduces the kernel's runtime further down to 560 µs. With this modification, we stripped away lots of unnecessary threads and increased the fraction of the ones doing useful work from 0.39 to $\pi r^2/4r^2 \approx 0.79$.
+
+```C++
+Region region = restricted_brush_dab_region(brush_dab, grid_size);
+
+if (!region.empty()) {
+    dim3 block_dim(16, 16);
+    dim3 grid_dim(ceil_div(region.size.width, block_dim.x), ceil_div(region.size.height, block_dim.y));
+
+    smoothstep<<<grid_dim, block_dim>>>(heights, grid_size, height_range, brush_dab, region.origin);
+}
+```
+
+The brush circle size we previously picked is rather big and covers lots of the height grid's space. We expect the brush's usage in the application to be considerably finer and restricted to much smaller areas of the grid. Seeing the above performance gain, we can expect even more during actual use. An experimental kernel launch with half our previous radius shows, for example, a further decrease in runtime to 125 µs.
+
+#### Vectorizing memory access
+
+Since there are no cross dependencies between the vertices in our grid and we are mostly memory bound, there isn't much we can do other than optimize those memory accesses. We could try to coarsen our kernel along either dimension or alter the grid configuration, but neither of these gives us much benefit. We only found a very small runtime decrease coarsening the kernel along the height dimension with a factor of 2, or modifying the block size to $32\times8$.
+
+However, there is another small trick waiting for us. If we are ok with adding the requirement of 16-byte alignment and a width divisible by 4 to our height grid, we are able to use `float4` vector loads instead of scalar loads. Instead of loading only one height grid vertex, each thread will load four consecutive vertices in this modification. In a sense, this adds coarsening along the width dimension to our kernel, with the benefit of needing only one load instruction. To accommodate for the new requirements, we might need to extend the bounding square a bit to its right or left. This could potentially add up to three "unnecessary" columns in either direction. However, especially for bigger brush circles, we deem this to be ok.
+
+```C++
+__global__ void smoothstep(float* heights, Size grid_size, Range height_range, BrushDab brush_dab, Vertex offset) {
+    int col = (blockIdx.x * blockDim.x + threadIdx.x) * 4 + offset.col;
+    int row = blockIdx.y * blockDim.y + threadIdx.y + offset.row;
+
+    if (col < grid_size.width && row < grid_size.height) {
+        int index = row * grid_size.width + col;
+        // We guarantee grid_size.width and offset.col to be multiples of 4, 
+        // hence index being 16-byte aligned
+        float4 values = *(float4*)&(heights[index]);
+
+        values.x = apply_brush_dab(values.x, col, row, height_range, brush_dab);
+        values.y = apply_brush_dab(values.y, col + 1, row, height_range, brush_dab);
+        values.z = apply_brush_dab(values.z, col + 2, row, height_range, brush_dab);
+        values.w = apply_brush_dab(values.w, col + 3, row, height_range, brush_dab);
+
+        *(float4*)&(heights[index]) = values;
+    }
+}
+```
+
+We can play around a bit with different block configurations but this won't be doing much difference. If anything, we can notice an improvement switching it to $8\times32$.  Seeing how this brings us back to a square access of $32\times32$ elements per block, we decide to keep it. A square access should give us, in theory, the minimal number of blocks required to cover the entire click's circle.
+
+Compared to the unvectorized implementation, we observe a decrease in issued instructions by 27%. Memory throughput is now higher across all layers. Even more important for our memory-bound kernel, memory is now 87% busier than before, and we use 91% of our available bandwidth. All of this is a consequence of having more memory throughput per instruction. The kernel's runtime is now at 524 µs.
+
+#### Reducing unnecessary memory access
+While the improvement in the memory-related metrics from the previous modification seems impressive, the actual speedup is rather disappointing. In the current implementation, we load and store grid heights from DRAM unconditionally, even though they might not be modified. Given our previous computation, these wasted memory operations would occur in ~20% of the kernel's threads. This shows the metrics above did not tell the full story on their own. A busy memory pipeline transferring pointless bytes is not what we want.
+
+We can do better than this. Adding a few lines to the code, we can first check if any of a thread's four vertices lie inside the brush's circle. Only if this condition holds true, we then load the values from memory. Profiling this variation with Nsight Compute, we now find the Streaming Multiprocessors busy 30% more often than before. We get around 61% more eligible and around 30% more issued warps per scheduler, on average. This is the direct benefit of the boundary warps no longer needing access to memory. The kernel's overall runtime is now at 408 µs.
+
+ ```C++
+float distance_x = compute_distance(col, row, brush_dab);
+float distance_y = compute_distance(col + 1, row, brush_dab);
+float distance_z = compute_distance(col + 2, row, brush_dab);
+float distance_w = compute_distance(col + 3, row, brush_dab);
+
+bool active_x = is_active(distance_x, brush_dab);
+bool active_y = is_active(distance_y, brush_dab);
+bool active_z = is_active(distance_z, brush_dab);
+bool active_w = is_active(distance_w, brush_dab);
+
+if (active_x || active_y || active_z || active_w) {
+    int index = row * grid_size.width + col;
+    float4 values = *(float4*)&(heights[index]);
+
+    if (active_x) {
+        values.x = apply_brush_dab(values.x, distance_x, height_range, brush_dab);
+    }
+    if (active_y) {
+        values.y = apply_brush_dab(values.y, distance_y, height_range, brush_dab);
+    }
+    if (active_z) {
+        values.z = apply_brush_dab(values.z, distance_z, height_range, brush_dab);
+    }
+    if (active_w) {
+        values.w = apply_brush_dab(values.w, distance_w, height_range, brush_dab);
+    }
+
+    *(float4*)&(heights[index]) = values;
+}
+ ```
 
 #### Cache usage
 
-When using this kernel during an actual application run, we can expect it to be launched multiple times in a row. On our GPU with a L2 cache size of 32 MiB, we can fit a total of 8,388,608 floating point values. In an optimal scenario, where the cache is not disturbed by anything else and the kernel is launched consecutively with a constrained block of $4000\times4000$ elements, around 52% of all data could theoretically be served hot from cache instead of DRAM.
+When using this kernel during an actual application run, we can expect it to be launched multiple times in a row in short sequences. On our GPU with an L2 cache size of 32 MiB, we can fit a total of 8,388,608 floating-point values. In our setup we launch the kernel with a brush whose circle covers the entire grid's height. This gives us approximately $4000^2*\frac{\pi}{4}=4\pi*10^6\approx12,566,370$ floating point values which the kernel operates on. This means around 67% of all values could theoretically be served hot from cache instead of being loaded from DRAM. 
 
-To verify this behaviour, we benchmarked 100 identical runs of this kernel with and without flushing the cache before each run. We could not observe any meaningful difference in runtime. This suggests the kernel's access pattern evicts its own cache lines before they can be reused by a subsequent run. Indeed, if we run the kernel with a smaller brush radius that fits all data into L2, we see the overall runtime decreased by 28%.
+To verify this behavior, we benchmarked 100 identical runs of this kernel with and without flushing the cache in between the runs. With the existing setup, i.e. using a brush radius of half the grid's height, we observed only a very slight speedup of 1.06. This suggests the kernel's access pattern largely evicts its own cache lines before they can be reused by a subsequent run. Indeed, if we run the kernel with a smaller brush radius that comfortably fits all data into L2 ($r=1500$), we get a speedup of 1.43, meaning a reduction in runtime by about 30%.
 
-#### Further ideas
+#### Conclusion
 
-In theory we could also eliminate the square root in the computation of the distance of a grid vertex to the click center. However leaving it out would give us only very small modifications at the circle boundaries. Even if that were acceptable, it would not give us much with our memory bound kernel. Fewer compute steps would simply leave the processors run idle more often.
+With this memory-bound kernel, the current implementation reached the limits of what we can do. In the previous section, we estimated our kernel to modify approximately $4\pi*10^6$ grid elements. Taking the stated bandwidth of 256 GB/s and the fact that for each element we need 8 bytes of data transferred (one float loaded and stored), the optimal kernel's runtime can consequently be computed as
+$$
+\frac{32\pi*10^6 \mathrm{B}}{256 * 10^9 \frac{\mathrm{B}}{\mathrm{s}}}=\frac{\pi}{8}10^{-3}\mathrm{s}.
+$$
+
+Seeing that this evaluates to a runtime of approximately 393 µs, our profiled runtime is very good. Looking at Nsight Compute's roofline chart, we see our kernel sitting clearly memory bound almost at the roofline, with an arithmetic intensity of 4.63 FLOP/B and a compute throughput of almost 1 TFLOPS. This discrepancy shows that our earlier theoretical estimate was only an approximation. Nsight Compute's measurements reflect the compiler's actual issued instructions rather than the operations we counted by hand.
 
 ### Marching Squares Kernel
 
@@ -107,20 +247,20 @@ This algorithm may be viewed as a combination of a convolution and an (unstable)
 A simple solution to deal with this dynamic output would be to have each $2\times2$ subgrid always produce its maximal amount of output segments, setting the unused ones to `NaN` or some values outside the displayed area. However, that would take away a lot of the challenges for optimizing the kernel and what we are actually interested in. Plus, a kernel that yields only as many output segments as actually required gives a nice general solution and takes away work from the shader that renders them.
 
 ```C++
-__global__ void marching_squares(float const* heights, int height, int width, int* contour_count, float* contours, float threshold) {
+__global__ void marching_squares(float const* heights, Size grid_size, int* contour_count, float* contours, float threshold) {
     int col = blockIdx.x * blockDim.x + threadIdx.x;
     int row = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (col < width - 1 && row < height - 1) {
+    if (col < grid_size.width - 1 && row < grid_size.height - 1) {
         // Computes the contour type for the subgrid heights[col, row] - heights[col + 1, row + 1]
-        int type = compute_type(heights, threshold);  // A number between 0 and 15
+        int type = compute_type(heights, grid_size, threshold);  // A number between 0 and 15
         int local_count = count_for_type(type);  // Either 0, 4, or 8
 
         cuda::atomic_ref<int, cuda::thread_scope_device> contour_count_ref(*contour_count);
         int offset = contour_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
 
         // Store either no segment, one segment consisting of (x1, y1), (x2, y2) or two such segments to contours
-  }
+    }
 }
 ```
 
@@ -158,7 +298,7 @@ As a grid initialized with gentle Perlin noise appears to be the more interestin
 In its basic implementation, the performance of our kernel is quite poor. We measure a runtime of 2.76 ms on our $8000\times4000$ profiling grid. However there is an easy win waiting for us. Each contour segment consists of two $(x, y)$ start and end points, which maps naturally onto a single `float4` vector.
 
 ```C++
-__global__ void marching_squares(float const* heights, int height, int width, int* contour_count, float4* contours, float threshold)
+__global__ void marching_squares(float const* heights, Size grid_size, int* contour_count, float4* contours, float threshold)
 ```
 
 We already saw in the smoothstep kernel how vector stores and loads improved performance. In this kernel the gain is even more pronounced. Switching to `float4` stores, we observe a speedup by a factor of 1.33. The runtime is now at 2.07 ms and the number of executed instructions decreased by 37% (although we suspect that some of these gains can be attributed to the fact that we now construct the output vectors in place, while before we constructed the output data upfront and only later chose what was needed).
@@ -169,13 +309,13 @@ With the naive single-kernel implementation, we can expect warp divergence to be
 Instead of computing the contours in a single pass, we can split our kernel into two. The first kernel checks each grid cell for the presence of a contour segment. If one is found, the cell's grid indices are written to a temporary buffer (using `int2`'s for convenience). As in the basic implementation, the output slot is determined by atomically increasing a global counter. The second kernel then reads each such index pair, computes the corresponding contour segment, and writes it, reusing the same index, to the final contour buffer.
 
 ```C++
-__global__ void marching_squares_phase_1(float const* heights, int height, int width, int* contour_count, int2* coordinates, float threshold) {
+__global__ void marching_squares_phase_1(float const* heights, Size grid_size, int* contour_count, int2* coordinates, float threshold) {
     int col = blockIdx.x * blockDim.x + threadIdx.x;
     int row = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (col < width - 1 && row < height - 1) {
-        int type = compute_type(heights, threshold);
-        int local_count = count_for_type(type);
+    if (col < grid_size.width - 1 && row < grid_size.height - 1) {
+        int type = compute_type(heights, grid_size, threshold);
+        int local_count = count_for_type(type);  // Now either 0, 1 or 2
 
         cuda::atomic_ref<int, cuda::thread_scope_device> contour_count_ref(*contour_count);
         int offset = contour_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
@@ -187,10 +327,10 @@ __global__ void marching_squares_phase_1(float const* heights, int height, int w
             // The second segment will be computed together with the first by the second kernel. So we mark this index.
             coordinates[offset + 1] = int2(-1, -1);
         }
-  }
+    }
 }
 
-__global__ void marching_squares_phase_2(float const* heights, int height, int width, int const* contour_count, int2 const* coordinates, float threshold, float4* contours) {
+__global__ void marching_squares_phase_2(float const* heights, Size grid_size, int const* contour_count, int2 const* coordinates, float threshold, float4* contours) {
     int index = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (index < *contour_count) {
@@ -200,7 +340,7 @@ __global__ void marching_squares_phase_2(float const* heights, int height, int w
 
         // A negative x-coordinate marks a second segment that is generated by the previous thread.
         if (col != -1) {
-            int type = compute_type(heights, row, col, threshold);
+            int type = compute_type(heights, grid_size, row, col, threshold);
 
             // Compute the 1 or 2 contour segments for this type and store them at contours[index] (and contours[index + 1] respectively)
         }
@@ -217,13 +357,13 @@ In a first attempt, we launch the second kernel with the same amount of threads 
 We can do better by copying the counter back to the CPU and launching the second kernel with exactly as many threads as there are segments to compute. Despite the added cost of the device-to-host transfer, the much smaller dispatch more than compensates, improving the overall runtime down to 1194 µs (using 17 µs and 40 µs for the memory transfer and second kernel respectively).
 
 ```C++
-marching_squares_phase_1<<<...>>>(heights, height, width, contour_count, coordinates, threshold);
+marching_squares_phase_1<<<...>>>(heights, grid_size, contour_count, coordinates, threshold);
 
 int contour_count_h;
 cudaMemcpy(&contour_count_h, contour_count, sizeof(int), cudaMemcpyDeviceToHost);
 
 
-marching_squares_phase_2<<<...>>>(heights, height, width, contour_count_h, coordinates, threshold, contours);
+marching_squares_phase_2<<<...>>>(heights, grid_size, contour_count_h, coordinates, threshold, contours);
 ```
 
 Splitting the kernel into two parts, we improved our algorithm by approximately 16%. In theory, we are still left with warp divergence in the second kernel. But the two-segment case is so rare, that we can essentially neglect it. Subdividing the kernel further would introduce additional overhead that outweighs any gains from eliminating this remaining divergence.
@@ -238,8 +378,8 @@ int row = blockIdx.y * BLOCK_DIM_Y + threadIdx.y;
 // Halo values are loaded directly from DRAM
 __shared__ float heights_s[BLOCK_DIM_Y][BLOCK_DIM_X];
 
-if (col < width && row < height) {
-    heights_s[threadIdx.y][threadIdx.x] = heights[row * width + col];
+if (col < grid_size.width && row < grid_size.height) {
+    heights_s[threadIdx.y][threadIdx.x] = heights[row * grid_size.width + col];
 }
 __syncthreads();
 
@@ -254,12 +394,12 @@ We saw that even though there are repeated loads, the first kernel still exhibit
 Since data reuse is limited, we apply the same idea as before and store the corresponding $2\times2$ subgrid values as packed `float4` vectors in the first kernel, alongside the grid indices. The second kernel can then load these packed values instead of fetching the data from the height grid directly. While this introduces an additional store instruction in the first kernel, it allows the second kernel to access its input in a fully coalesced manner.
 
 ```C++
-__global__ void marching_squares_phase_1(float const* heights, int height, int width, int* contour_count, int2* coordinates, float4* subgrid_heights, float threshold) {
+__global__ void marching_squares_phase_1(float const* heights, Size grid_size, int* contour_count, int2* coordinates, float4* subgrid_heights, float threshold) {
     int col = blockIdx.x * blockDim.x + threadIdx.x;
     int row = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (col < width - 1 && row < height - 1) {
-        int type = compute_type(heights, threshold);
+    if (col < grid_size.width - 1 && row < grid_size.height - 1) {
+        int type = compute_type(heights, grid_size, threshold);
         int local_count = count_for_type(type);
 
         cuda::atomic_ref<int, cuda::thread_scope_device> contour_count_ref(*contour_count);
@@ -272,7 +412,7 @@ __global__ void marching_squares_phase_1(float const* heights, int height, int w
         if (local_count > 1) {
             coordinates[offset + 1] = int2(-1, -1);
         }
-  }
+    }
 }
 
 __global__ void marching_squares_phase_2(int contour_count, int2 const* coordinates, float4 const* subgrid_heights, float threshold, float4* contours) {
@@ -331,12 +471,12 @@ What currently blocks us from computing contours at multiple thresholds in paral
 However, that would leave several optimizations underutilized. To enable them, we can create a second temporary output buffer, to which the first kernel stores the corresponding thresholds. Each element of this buffer corresponds to an index pair in the temporary vertex buffer. The second kernel then loads both buffers and is consequently able to identify a grid index pair together with its threshold.
 
 ```C++
-__global__ void marching_squares_phase_1(float const* heights, int height, int width, int* contour_count, int2* coordinates, float* subgrid_thresholds, float threshold) {
+__global__ void marching_squares_phase_1(float const* heights, Size grid_size, int* contour_count, int2* coordinates, float* subgrid_thresholds, float threshold) {
     int col = blockIdx.x * blockDim.x + threadIdx.x;
     int row = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (col < width - 1 && row < height - 1) {
-        int type = compute_type(heights, threshold);
+    if (col < grid_size.width - 1 && row < grid_size.height - 1) {
+        int type = compute_type(heights, grid_size, threshold);
         int local_count = count_for_type(type);
 
         cuda::atomic_ref<int, cuda::thread_scope_device> contour_count_ref(*contour_count);
@@ -349,10 +489,10 @@ __global__ void marching_squares_phase_1(float const* heights, int height, int w
         if (local_count > 1) {
             coordinates[offset + 1] = int2(-1, -1);
         }
-  }
+    }
 }
 
-__global__ void marching_squares_phase_2(float const* heights, int height, int width, int contour_count, int2 const* coordinates, float const* subgrid_thresholds, float4* contours) {
+__global__ void marching_squares_phase_2(float const* heights, Size grid_size, int contour_count, int2 const* coordinates, float const* subgrid_thresholds, float4* contours) {
     int index = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (index < contour_count) {
@@ -363,7 +503,7 @@ __global__ void marching_squares_phase_2(float const* heights, int height, int w
         float threshold = subgrid_thresholds[index];
 
         if (col != -1) {
-            int type = compute_type(heights, row, col, threshold);
+            int type = compute_type(heights, grid_size, row, col, threshold);
 
             // Continue..
         }
@@ -376,14 +516,14 @@ With this tweak, we are now able to launch the first kernel in batch for all thr
 
 ```C++
 for (int i = 0; i < threshold_count; ++i) {
-    marching_squares_phase_1<<<..., streams[i]>>>(heights, height, width, contour_count, coordinates, subgrid_thresholds, thresholds[i]);
+    marching_squares_phase_1<<<..., streams[i]>>>(heights, grid_size, contour_count, coordinates, subgrid_thresholds, thresholds[i]);
 }
 cudaDeviceSynchronize();
 
 int contour_count_h;
 cudaMemcpy(&contour_count_h, contour_count, sizeof(int), cudaMemcpyDeviceToHost);
 
-marching_squares_phase_2<<<...>>>(heights, height, width, contour_count_h, coordinates, subgrid_thresholds, contours);
+marching_squares_phase_2<<<...>>>(heights, grid_size, contour_count_h, coordinates, subgrid_thresholds, contours);
 ```
 
 We are still left with quite some kernel launches. Even though we run them in parallel, the first kernel is launched 100 times. CUDA Graphs are a great way to speed up such a situation. Instead of launching each kernel individually from the host, we can capture the sequence of launches into a graph once and then replay this graph as a single unit for every subsequent call. This removes most of the CPU-side launch overhead that would otherwise accumulate.
@@ -393,7 +533,7 @@ To avoid these multiple launches of the first kernel altogether, we can also vec
 As a consequence of this vectorization, we can no longer pass the thresholds directly as the first kernel's parameters. Since we only know the threshold count at runtime, this leaves us no option other than passing a pointer to them instead. Each thread then has to load its threshold dynamically at runtime.
 
 ```C++
-__global__ void marching_squares_phase_1(float const* heights, int height, int width, int* contour_count, int2* coordinates, float* subgrid_thresholds, float const* thresholds, int threshold_count) {
+__global__ void marching_squares_phase_1(float const* heights, Size grid_size, int* contour_count, int2* coordinates, float* subgrid_thresholds, float const* thresholds, int threshold_count) {
     int layer = blockIdx.z * blockDim.z + threadIdx.z;
 
     if (layer < threshold_count) {

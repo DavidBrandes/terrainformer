@@ -3,6 +3,7 @@
 #include <memory>
 
 #include "compute/types.cuh"
+#include "types.cuh"
 
 namespace compute {
 
@@ -18,7 +19,7 @@ public:
   MappedGpuResources(MappedGpuResources&&) = delete;
   MappedGpuResources& operator=(MappedGpuResources&&) = delete;
 
-  Grid heights() const;
+  ConstrainedGrid heights() const;
   Segments contours() const;
 
 private:

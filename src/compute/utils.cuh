@@ -19,6 +19,7 @@
 namespace compute {
 int ceil_div(int n, int d);
 
+// Generate a 16-byte aligned sub-region of a given size
 Region aligned_brush_dab_region(BrushDab brush_dab, Size size);
 
 } // namespace compute

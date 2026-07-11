@@ -96,7 +96,7 @@ void SceneController::shift(std::shared_ptr<compute::GpuResources>& resources, A
   float intensity = state.mouse.button == MouseState::Button::LEFT ? _heightBrushIntensity : -_heightBrushIntensity;
   BrushDab brush_dab{.circle = effect_circle, .intensity = intensity};
 
-  compute::Result result = modify_height(resources->map(), HeightGrid::HEIGHT_RANGE, brush_dab, _thresholds);
+  compute::Result result = modify_height(resources->map(), brush_dab, _thresholds);
 
   if (result.modified) {
     resources->scene()->contour.update(std::move(result.contourOffsets));

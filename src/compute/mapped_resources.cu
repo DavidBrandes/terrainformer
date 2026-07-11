@@ -23,7 +23,12 @@ Segments MappedGpuResources::contours() const {
                   .maxCount = _parent->_scene->contour.maxSegments()};
 }
 
-Grid MappedGpuResources::heights() const { return Grid{.values = _heights, .size = _parent->_scene->map.size()}; }
+ConstrainedGrid MappedGpuResources::heights() const {
+  Grid grid{.values = _heights, .size = _parent->_scene->map.size()};
+  ConstrainedGrid constrained_grid{.grid = grid, .range = _parent->_scene->map.range()};
+
+  return constrained_grid;
+}
 
 MappedGpuResources::~MappedGpuResources() { CUDA_CHECK(cudaGraphicsUnmapResources(2, _parent->_resources)); }
 

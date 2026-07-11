@@ -45,10 +45,8 @@ struct CGrid {
   __device__ float const* operator[](int row) const { return values + row * size.width; }
 };
 
-struct ConstrainedGrid : public Grid {
-  ConstrainedGrid(Grid grid, Range range_) : Grid(grid), range(range_) {}
-  ConstrainedGrid() = default;
-
+struct ConstrainedGrid {
+  Grid grid;
   Range range;
 };
 

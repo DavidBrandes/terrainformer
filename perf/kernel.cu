@@ -1,5 +1,4 @@
 #include <cmath>
-#include <cub/cub.cuh>
 #include <cuda/atomic>
 
 #include "kernel.cuh"

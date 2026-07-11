@@ -24,8 +24,8 @@ constexpr float MAX_COUNT_FRACTION = 0.01;
 void launch_smoothstep() {
   HeightGrid height_grid = make_height_grid(GRID_CONFIG);
   GpuBuffer<float> height_grid_buffer = make_gpu_buffer(height_grid);
-  compute::ConstrainedGrid heights{compute::Grid{.values = height_grid_buffer.data, .size = SIZE},
-                                   HeightGrid::HEIGHT_RANGE};
+  compute::Grid grid{.values = height_grid_buffer.data, .size = SIZE};
+  compute::ConstrainedGrid constrained_grid{.grid = grid, .range = HeightGrid::HEIGHT_RANGE};
 
   Point brush_dab_center = point_from_normalized(SIZE);
   float brush_dab_radius = radius_from_normalized(SIZE);
@@ -37,7 +37,7 @@ void launch_smoothstep() {
   dim3 grid_dim(compute::ceil_div(region.size.width, 4 * block_dim.x),
                 compute::ceil_div(region.size.height, block_dim.y));
 
-  compute::smoothstep<<<grid_dim, block_dim>>>(heights, region.origin, brush_dab);
+  compute::smoothstep<<<grid_dim, block_dim>>>(constrained_grid, region.origin, brush_dab);
 
   CUDA_CHECK(cudaGetLastError());
   CUDA_CHECK(cudaDeviceSynchronize());
@@ -138,4 +138,4 @@ void launch_marching_squares() {
 
 } // namespace perf
 
-int main() { perf::launch_marching_squares(); }
+int main() { perf::launch_smoothstep(); }

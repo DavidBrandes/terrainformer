@@ -17,7 +17,7 @@ struct Result {
 
 Result compute_contour(std::shared_ptr<MappedGpuResources> resources, std::vector<float> const& thresholds);
 
-Result modify_height(std::shared_ptr<MappedGpuResources> resources, Range height_range, BrushDab brush_dab,
+Result modify_height(std::shared_ptr<MappedGpuResources> resources, BrushDab brush_dab,
                      std::vector<float> const& thresholds);
 
 } // namespace compute

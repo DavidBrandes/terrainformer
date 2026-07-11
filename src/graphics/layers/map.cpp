@@ -65,6 +65,7 @@ MapLayer::MapLayer(HeightGrid const& height_grid) {
   glBindVertexArray(0);
 
   _size = height_grid.size;
+  _range = HeightGrid::HEIGHT_RANGE;
 }
 
 MapLayer::~MapLayer() {

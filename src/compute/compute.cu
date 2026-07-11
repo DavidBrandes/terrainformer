@@ -4,7 +4,6 @@
 #include <cmath>
 #include <format>
 #include <iostream>
-#include <stdexcept>
 
 #include "compute/kernels/kernels.cuh"
 #include "compute/mapped_resources.cuh"
@@ -16,7 +15,7 @@ namespace compute {
 
 Result compute_contour(std::shared_ptr<MappedGpuResources> resources, std::vector<float> const& thresholds) {
   Segments contours = resources->contours();
-  Grid heights = resources->heights();
+  Grid heights = resources->heights().grid;
 
   CUDA_CHECK(cudaMemset(contours.count, 0, sizeof(int)));
 
@@ -45,15 +44,10 @@ Result compute_contour(std::shared_ptr<MappedGpuResources> resources, std::vecto
   return Result{.modified = true, .contourOffsets = offsets};
 }
 
-Result modify_height(std::shared_ptr<MappedGpuResources> resources, Range height_range, BrushDab brush_dab,
+Result modify_height(std::shared_ptr<MappedGpuResources> resources, BrushDab brush_dab,
                      std::vector<float> const& thresholds) {
-  Grid heights = resources->heights();
-
-  if (heights.size.width % 4 != 0) {
-    throw std::runtime_error("[modify_height]: Grid width needs to be a multiple of 4 for aligned float4 access");
-  }
-
-  Region region = aligned_brush_dab_region(brush_dab, heights.size);
+  ConstrainedGrid heights = resources->heights();
+  Region region = aligned_brush_dab_region(brush_dab, heights.grid.size);
 
   if (region.empty()) {
     return Result{.modified = false, .contourOffsets = std::vector<int>{}};
@@ -62,7 +56,7 @@ Result modify_height(std::shared_ptr<MappedGpuResources> resources, Range height
   dim3 block_dim(8, 32);
   dim3 grid_dim(ceil_div(region.size.width, 4 * block_dim.x), ceil_div(region.size.height, block_dim.y));
 
-  smoothstep<<<grid_dim, block_dim>>>(ConstrainedGrid{heights, height_range}, region.origin, brush_dab);
+  smoothstep<<<grid_dim, block_dim>>>(heights, region.origin, brush_dab);
   CUDA_CHECK(cudaGetLastError());
 
   return compute_contour(resources, thresholds);

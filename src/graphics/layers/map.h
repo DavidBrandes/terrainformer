@@ -19,6 +19,7 @@ public:
   GLuint heightsVbo() const { return _heightsVbo; }
   GLsizei indexCount() const { return _indexCount; }
   Size size() const { return _size; }
+  Range range() const { return _range; }
 
 private:
   GLuint _vao;
@@ -28,4 +29,5 @@ private:
   GLsizei _indexCount;
 
   Size _size;
+  Range _range;
 };

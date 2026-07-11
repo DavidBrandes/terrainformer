@@ -1,3 +1,5 @@
+#include <stdexcept>
+
 #include "compute/utils.cuh"
 
 namespace compute {
@@ -5,6 +7,10 @@ namespace compute {
 int ceil_div(int n, int d) { return (n + d - 1) / d; }
 
 Region aligned_brush_dab_region(BrushDab brush_dab, Size grid_size) {
+  if (grid_size.width % 4 != 0) {
+    throw std::runtime_error("[modify_height]: Grid width needs to be a multiple of 4 for aligned float4 access");
+  }
+
   // Only grid vertices strictly inside the brush dab circle are selected
   int col_start = std::max(0, static_cast<int>(std::floor(brush_dab.circle.center.x - brush_dab.circle.radius + 1)));
   int col_end = std::min(static_cast<int>(std::ceil(brush_dab.circle.center.x + brush_dab.circle.radius - 1)),
