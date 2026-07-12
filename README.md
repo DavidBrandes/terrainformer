@@ -234,7 +234,17 @@ $$
 \frac{32\pi*10^6 \mathrm{B}}{256 * 10^9 \frac{\mathrm{B}}{\mathrm{s}}}=\frac{\pi}{8}10^{-3}\mathrm{s}.
 $$
 
-Seeing that this evaluates to a runtime of approximately 393 µs, our profiled runtime is very good. Looking at Nsight Compute's roofline chart, we see our kernel sitting clearly memory bound almost at the roofline, with an arithmetic intensity of 4.63 FLOP/B and a compute throughput of almost 1 TFLOPS. This discrepancy shows that our earlier theoretical estimate was only an approximation. Nsight Compute's measurements reflect the compiler's actual issued instructions rather than the operations we counted by hand.
+Seeing that this evaluates to a runtime of approximately 393 µs, our profiled runtime is very good. Looking at Nsight Compute's roofline chart, we see our kernel sitting clearly memory bound almost at the roofline, with an arithmetic intensity of 4.63 FLOP/B and a compute throughput of almost 1 TFLOPS. This discrepancy shows that our earlier theoretical estimate was only an approximation. Nsight Compute's measurements reflect the compiler's actual issued instructions rather than the operations we counted by hand. In the below table we summarize each of the steps we took to arrive at our final version with their overall kernel runtime and relative performance improvement.
+
+| Variant                 | Runtime (µs) | Reduction (%) |
+| ----------------------- | ------------ | ------------- |
+| Naive                   | 3528         | -             |
+| Explicit multiplication | 1102         | 69            |
+| Hoisted radius check    | 763          | 31            |
+| Bounding square         | 560          | 27            |
+| Vectorized              | 524          | 6             |
+| Reduced memory access   | 408          | 22            |
+
 
 ### Marching Squares Kernel
 
