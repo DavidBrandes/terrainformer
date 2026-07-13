@@ -110,7 +110,7 @@ __global__ void marching_squares_part_1(compute::CGrid heights, int* __restrict_
 
     // TODO this should be refined
     if (local_count + global_count > max_count) {
-      return;
+      continue;
     }
 
     tmp_coordinates[global_count] = int2(col, row);

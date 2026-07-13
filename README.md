@@ -647,7 +647,7 @@ __syncthreads();
 
 To be fair, we should add that only about half of this 7 ms performance gain can be attributed to the use of shared memory itself. The other half came from hoisting the repeated `if (layer + c >= threshold_count)` check out of the loop into a single computation of `layer_count`. While it only became necessary in the shared memory version, this single change would also have helped the basic implementation.
 
-#### Unrolling the loop
+#### Unrolling the loop over the thresholds
 Having a loop over the individual thresholds inside our kernel, we can hint to the compiler to unroll it. An unrolled loop exposes more independent instructions to the scheduler, which it can then work with to exploit instruction level parallelism and better hide latencies. While the pragma to unroll a loop is only a hint to the compiler, it seems to have followed through with it in our case. When hinting to unroll in powers of 2 for the range 1 to 32, we can see actual performance differences which we show in the below table.
 
 
@@ -681,6 +681,29 @@ Looking at the profiler output, we have another interesting observation. Irrespe
 
 Looking at the profiler output, we have another interesting observation. Irrespective of the chosen unroll factor, the threads use the same number of registers. The compiler seems to be pretty good at reusing registers. However, this also suggests the performance increase doesn't really come from improved instruction level parallelism. We expect such tight register reuse to introduce data hazards, which would directly contradict an increase in parallelism. Instead, the performance gain appears to be coming from a reduced loop control overhead. We see issued instructions decrease by 15% and branch instructions decrease by 23% when comparing the kernel with unroll factor of 16 against the base implementation using no pragma.
 
-// Vectorizing the thresholds
+#### Using vector loads for the thresholds
+Trying to repeat the success we have had so far using vector loads and stores to speed up our kernels, we can try a similar approach when loading the thresholds. If we guarantee their 16-byte alignment and have the coarse factor be a multiple of 4, the change to the code is rather small. Testing it out, however, we observe only a minor speedup of 1.23 ms down to 35.58 ms. Analyzing the baseline kernel, we find it to be very much compute bound, with a compute throughput of 83% and a memory throughput of only 33%. Coarsening the kernel and the subsequent modifications allowed us to move from being memory bound to being compute bound.
+
+Given this baseline, the only small performance gain makes sense. We are trying to optimize a memory pipeline that isn't our actual bottleneck. The additional vector loads only brought memory throughput further down to 15%. However, the actual speedup seems to be coming from a reduction in issued instructions by 3%, which corresponds with the decrease in the kernel's runtime.
+
+```C++
+#pragma unroll 4
+for (int i = 0; i < compute_layers; ++i) {
+    float4 t = thresholds_s[i];
+    float threshold_array[4] = {t.x, t.y, t.z, t.w};
+
+    #pragma unroll 4
+    for (int j = 0; j < 4; ++j) {
+        int type = compute_type(top_left, top_right, bottom_right, bottom_left, threshold_array[j]);
+        int local_count = count_for_type(type);
+
+        // Continue..
+```
+
+With the only slight performance increase, the additional requirement of having the number of thresholds be a multiple of 4 seems to outweigh the benefits. We could still store thresholds that aren't evenly divisible by four in a 16-byte aligned array and load them in chunks of four. However, this introduces new instructions to assess boundary conditions that would actually lead to a performance degradation. Alternatively, we can also be sneaky and store values outside the height grid's allowed height range in the array's boundary positions. That way, we would compute contour segments at another threshold, which, however, is guaranteed to produce no segments. Still, all of these changes would add complexity to our code, which we simply deem not worth it.
+
+#### Privatizing the output data
+We need to look elsewhere for a more meaningful improvement.
+
 // Block write, privatization
 // Outlook, Intro, Code snippets

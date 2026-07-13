@@ -5,6 +5,8 @@
 
 #include <driver_types.h>
 
+#include <limits>
+
 #include "compute/kernels/kernels.cuh"
 #include "compute/types.cuh"
 #include "compute/utils.cuh"
@@ -85,8 +87,6 @@ void launch_marching_squares() {
     perf::marching_squares_part_2<<<grid_dim_2, block_dim_2>>>(c_heights, contour_buffer.data, count,
                                                                tmp_coordinates_buffer.data, tmp_thresholds_buffer.data);
   };
-
-  // benchmark(func_coarsened, setup_coarsened);
 
   setup();
   func_base();

@@ -16,6 +16,6 @@ imgui.ini
 
 *.png
 *.ppm
-output/
+*.ncu-rep
 
 .venv/
