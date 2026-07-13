@@ -647,6 +647,40 @@ __syncthreads();
 
 To be fair, we should add that only about half of this 7 ms performance gain can be attributed to the use of shared memory itself. The other half came from hoisting the repeated `if (layer + c >= threshold_count)` check out of the loop into a single computation of `layer_count`. While it only became necessary in the shared memory version, this single change would also have helped the basic implementation.
 
+#### Unrolling the loop
+Having a loop over the individual thresholds inside our kernel, we can hint to the compiler to unroll it. An unrolled loop exposes more independent instructions to the scheduler, which it can then work with to exploit instruction level parallelism and better hide latencies. While the pragma to unroll a loop is only a hint to the compiler, it seems to have followed through with it in our case. When hinting to unroll in powers of 2 for the range 1 to 32, we can see actual performance differences which we show in the below table.
+
+
+```C++
+int layer = (blockIdx.z * BLOCK_DIM_Z + threadIdx.z) * COARSE_FACTOR;
+
+// Load thresholds into thresholds_s
+
+int compute_layers = min(COARSE_FACTOR, threshold_count - layer);
+
+#pragma unroll 16
+for (int i = 0; i < compute_layers; ++i) {
+    float threshold = thresholds_s[blockIdx.z][i];
+
+    int type = compute_type(heights, grid_size, threshold);
+    int local_count = count_for_type(type);
+
+    if (local_count > 0) {
+        // Continue..
+    }
+}
+```
+
+We observe a noticeable decrease in runtime up to a factor of 16, after which the runtime increases again. At a factor of 32, we basically eliminate the loop entirely for all but the boundary blocks, given the coarse factor of 32. At the most performant unroll factor of 16, we leave it at only two iterations. Interestingly, the compiler seems to have already unrolled the loop by a factor of two on its own, as explicitly setting it to 1, i.e. having no unrolling at all, shows a noticeable performance degradation.
+
+| Unroll Factor | None     | 1        | 2        | 4        | 8        | 16       | 32       |
+| ------------- | -------- | -------- | -------- | -------- | -------- | -------- | -------- |
+| **Runtime**   | 41.94 ms | 43.12 ms | 41.65 ms | 38.55 ms | 36.99 ms | 36.81 ms | 38.40 ms |
+
+Looking at the profiler output, we have another interesting observation. Irrespective of the chosen unroll factor, the threads use the same amount of registers. The compiler seems to be pretty good at reusing registers. However this also suggests the performance increase doesn't really come from an improved instruction level parallelism. We expect such a tight register reuse to introduce data hazards which directly would contradict an increased parallelism. Instead the performance gain appears to be coming from a reduced control overhead for the loop. We see issued instructions decreased by 15% and branch instructions decreased by 23% when comparing the kernel with unroll factor 16 against the base implementation (no pragma).
+
+Looking at the profiler output, we have another interesting observation. Irrespective of the chosen unroll factor, the threads use the same number of registers. The compiler seems to be pretty good at reusing registers. However, this also suggests the performance increase doesn't really come from improved instruction level parallelism. We expect such tight register reuse to introduce data hazards, which would directly contradict an increase in parallelism. Instead, the performance gain appears to be coming from a reduced loop control overhead. We see issued instructions decrease by 15% and branch instructions decrease by 23% when comparing the kernel with unroll factor of 16 against the base implementation using no pragma.
+
 // Vectorizing the thresholds
 // Block write, privatization
 // Outlook, Intro, Code snippets
