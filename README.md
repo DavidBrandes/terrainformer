@@ -250,11 +250,11 @@ Seeing that this evaluates to a runtime of approximately 393 µs, our profiled r
 
 #### Overview
 
-We next take a look at the [marching squares](src/compute/kernels/marching_squares.cu) kernel. This kernel uses the [marching squares algorithm](https://en.wikipedia.org/wiki/Marching_squares) to compute the contour lines of the underlying height grid. For the specified threshold values, this algorithm approximates respective contours with linear segments at a resolution of the grid underlying dimensions.
+We next take a look at the [marching squares](src/compute/kernels/marching_squares.cu) kernel. This kernel uses the [marching squares algorithm](https://en.wikipedia.org/wiki/Marching_squares) to compute the contour lines of an underlying height grid. For the specified threshold values, this algorithm approximates respective contours with linear segments at a resolution of the grid's underlying dimensions.
 
-This algorithm may be viewed as a combination of a convolution and an (unstable) filter kernel. Like a convolution kernel, we stride over the whole input grid with $2\times2$ subgrids. However, unlike a convolution, each subgrid produces a variably sized output For every four adjacent grid vertices (a $2\times2$ subgrid) and a single threshold, it may produce zero, one or two contour segments.
+This algorithm may thereby be viewed as some sort of amalgamation between a convolution and an (unstable) filter kernel. Like a convolution kernel, we stride over the whole input grid with $2\times2$ subgrids. However, unlike a convolution and behaving more like a filter, each subgrid produces a variably sized output. For every four adjacent grid vertices (a $2\times2$ subgrid) and a single threshold, the algorithm may produce zero, one or two contour segments.
 
-A simple solution to deal with this dynamic output would be to have each $2\times2$ subgrid always produce its maximal amount of output segments, setting the unused ones to `NaN` or some values outside the displayed area. However, that would take away a lot of the challenges for optimizing the kernel and what we are actually interested in. Plus, a kernel that yields only as many output segments as actually required gives a nice general solution and takes away work from the shader that renders them.
+A simple solution to deal with this dynamic output would be to have each $2\times2$ subgrid always produce its maximal amount of output segments and setting the unused ones to `NaN` or some values outside the displayed area. However, that would take away a lot from the challenges for optimizing the kernel. The objective we are actually interested in. Plus, a kernel that yields only as many output segments as actually required gives us a nice, more generally usable general solution and takes away work from the shader that eventually renders them.
 
 ```C++
 __global__ void marching_squares(float const* heights, Size grid_size, int* contour_count, float* contours, float threshold) {
@@ -262,14 +262,19 @@ __global__ void marching_squares(float const* heights, Size grid_size, int* cont
     int row = blockIdx.y * blockDim.y + threadIdx.y;
 
     if (col < grid_size.width - 1 && row < grid_size.height - 1) {
-        // Computes the contour type for the subgrid heights[col, row] - heights[col + 1, row + 1]
-        int type = compute_type(heights, grid_size, threshold);  // A number between 0 and 15
-        int local_count = count_for_type(type);  // Either 0, 4, or 8
+        // Computes the contour type for the subgrid 
+        // heights[col, row] - heights[col + 1, row + 1].
+        // Produces a number between 0 and 15
+        int type = compute_type(heights, grid_size, threshold);  
+        // Either 0, 4, or 8
+        int local_count = count_for_type(type);
 
         cuda::atomic_ref<int, cuda::thread_scope_device> contour_count_ref(*contour_count);
         int offset = contour_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
 
-        // Store either no segment, one segment consisting of (x1, y1), (x2, y2) or two such segments to contours
+        // Store either no segment, one segment
+        //  consisting of (x1, y1), (x2, y2) 
+        // or two such segments to contours
     }
 }
 ```
@@ -278,20 +283,20 @@ As before, we start with a naive implementation and will work our way towards a 
 
 #### Analysis
 
-Let us take a look at the computational intensity of this kernel. Since the amount of computational steps, bytes loaded and stored differs with the amount of output segments, we present the different cases in the below table.
+Let us first take a look at the computational intensity of this kernel. Since the amount of computational steps, bytes loaded and stored differs with the amount of output segments, we present the different cases in the below table.
 
-|                  | 0 Segments | 1 Segment | 2 Segments |
+| **Case**         | 0 Segments | 1 Segment | 2 Segments |
 | ---------------- | ---------- | --------- | ---------- |
 | **Bytes Loaded** | 16         | 20        | 20         |
 | **Bytes Stored** | 0          | 20        | 36         |
 | **FLOPs**        | 0          | 8         | 38         |
 | **OP/B**         | 0          | 0.2       | 0.68       |
 
-We can already notice that in this naive implementation, the kernel is heavily memory bound, even more so than the previous *smoothstep kernel*. Further we see that the computational intensity differs by quite a bit across the various output conditions.
+We can already notice that in this naive implementation, the kernel is heavily memory bound, even more so than the previous smoothstep kernel. Further we see that the computational intensity differs by quite a bit across the various output conditions.
 
-To get a feeling for the frequency with which we can expect each of these three cases to arise, we launch the kernel across several grid configurations. In particular, we look into three categories: regular sinusoidal grids, and two groups of Perlin noise, one producing more gentle and the other more turbulent terrain. For each category we vary parameters and contour threshold across their respective ranges. The distribution of the three output cases for each category is displayed in the below table. The output is quite revealing. We observe a very skewed distribution as for most $2\times2$ subgrids, we won't be doing any computation at all. Only rarely, a subgrid will actually produce an output segment and two are rarer still.
+To get a feeling for the frequency, with which we can expect each of these three cases to arise, we launch the kernel across several grid configurations. In particular, we look into three categories: regular sinusoidal grids, and two groups of Perlin noise, one producing more gentle and the other more turbulent terrain. For each category we vary parameters and contour threshold across their respective ranges. The distribution of the three output cases for each category is displayed in the below table. We observe a very skewed distribution as for most $2\times2$ subgrids, we won't be doing any computation at all. Only rarely, a subgrid will actually produce an output segment and two are rarer still.
 
-|                            | 0 Segments | 1 Segment | 2 Segments |
+| **Case**                   | 0 Segments | 1 Segment | 2 Segments |
 | -------------------------- | ---------- | --------- | ---------- |
 | **Sinusoidal**             | ~99.9%     | ~0.1%     | ~0%        |
 | **Gentle Perlin Noise**    | ~99.8%     | ~0.2%     | ~0%        |
@@ -299,7 +304,7 @@ To get a feeling for the frequency with which we can expect each of these three 
 
 As a grid initialized with gentle Perlin noise appears to be the more interesting and realistic case, we will use it to continue with our profiling (parameters: octaves 4, frequency 6, persistence 0.5). Since this grid produces most of its segments close to the midpoint of its height range, we choose this midpoint as our contour threshold. At this threshold, our selected initialization produces only 0 and 1, but no 2, output segments per $2\times2$ subgrid. The actual counts are shown below.
 
-|                | 0 Segments | 1 Segment | 2 Segments |
+| **Case**       | 0 Segments | 1 Segment | 2 Segments |
 | -------------- | ---------- | --------- | ---------- |
 | **Count**      | 31,853,485 | 134,516   | 0          |
 | **Occurrence** | ~99.6%     | ~0.4%     | 0%         |
@@ -311,12 +316,12 @@ In its basic implementation, the performance of our kernel is quite poor. We mea
 __global__ void marching_squares(float const* heights, Size grid_size, int* contour_count, float4* contours, float threshold)
 ```
 
-We already saw in the smoothstep kernel how vector stores and loads improved performance. In this kernel the gain is even more pronounced. Switching to `float4` stores, we observe a speedup by a factor of 1.33. The runtime is now at 2.07 ms and the number of executed instructions decreased by 37% (although we suspect that some of these gains can be attributed to the fact that we now construct the output vectors in place, while before we constructed the output data upfront and only later chose what was needed).
+We already observed in the smoothstep kernel how vector stores and loads improved performance. In this kernel the gain is even more pronounced. Switching to `float4` stores, we observe a speedup by a factor of 1.33. The runtime is now at 2.07 ms and the number of executed instructions decreased by 37% (although we suspect that some of these gains may also be attributed to how restructured the code to allow for this modification).
 
 #### Splitting the kernel into two
-With the naive single-kernel implementation, we can expect warp divergence to be quite high. From the distribution measured above, on average only around one thread in every 500 will perform any floating-point computation. A single active thread is enough to prevent its entire warp from retiring early. Precious execution time that could otherwise be spent computing contours on a different region of the height grid.
+With the naive single-kernel implementation, we can expect warp divergence to be quite high. From the distribution measured above, on average only around one thread in every 250 will perform any floating-point computation. A single active thread is enough to prevent its entire warp from retiring early. Precious execution time that could otherwise be spent computing contours on a different region of the height grid.
 
-Instead of computing the contours in a single pass, we can split our kernel into two. The first kernel checks each grid cell for the presence of a contour segment. If one is found, the cell's grid indices are written to a temporary buffer (using `int2`'s for convenience). As in the basic implementation, the output slot is determined by atomically increasing a global counter. The second kernel then reads each such index pair, computes the corresponding contour segment, and writes it, reusing the same index, to the final contour buffer.
+Instead of computing the contours in a single pass, we can split our kernel into two. The first kernel checks each grid cell for the presence of a contour segment. If one is found, the cell's grid indices are written to a temporary buffer (already using `int2`'s for convenience). As in the basic implementation, the output slot is determined by atomically increasing a global counter. The second kernel then reads each such index pair, computes the corresponding contour segment, and writes it, reusing the same index, to the final contour buffer.
 
 ```C++
 __global__ void marching_squares_phase_1(float const* heights, Size grid_size, int* contour_count, int2* coordinates, float threshold) {
@@ -325,7 +330,8 @@ __global__ void marching_squares_phase_1(float const* heights, Size grid_size, i
 
     if (col < grid_size.width - 1 && row < grid_size.height - 1) {
         int type = compute_type(heights, grid_size, threshold);
-        int local_count = count_for_type(type);  // Now either 0, 1 or 2
+        // Now either 0, 1 or 2
+        int local_count = count_for_type(type);  
 
         cuda::atomic_ref<int, cuda::thread_scope_device> contour_count_ref(*contour_count);
         int offset = contour_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
@@ -334,7 +340,9 @@ __global__ void marching_squares_phase_1(float const* heights, Size grid_size, i
             coordinates[offset] = int2(col, row);
         }
         if (local_count > 1) {
-            // The second segment will be computed together with the first by the second kernel. So we mark this index.
+            // The second segment will be computed together 
+            // with the first by the second kernel. 
+            // Hence the index is marked off.
             coordinates[offset + 1] = int2(-1, -1);
         }
     }
@@ -348,11 +356,14 @@ __global__ void marching_squares_phase_2(float const* heights, Size grid_size, i
         int col = value.x;
         int row = value.y;
 
-        // A negative x-coordinate marks a second segment that is generated by the previous thread.
+        // A negative x-coordinate marks a second segment
+        // that is generated by the previous thread.
         if (col != -1) {
             int type = compute_type(heights, grid_size, row, col, threshold);
 
-            // Compute the 1 or 2 contour segments for this type and store them at contours[index] (and contours[index + 1] respectively)
+            // Compute the 1 or 2 contour segments for this type
+            //  and store them at contours[index] 
+            // (and contours[index + 1] respectively)
         }
     }
 }
@@ -362,9 +373,9 @@ To profile this modified setup, we need to switch to CUDA events as opposed to N
 
 CUDA events allow us to capture timings across multiple kernel launches, including any potential memory transfers in between. In our setup, we run each variant 100 times after 5 warmup iterations and report the average runtime. Using this method, we observe an average runtime of 1429 µs for the current version of our kernel before applying any division.
 
-In a first attempt, we launch the second kernel with the same amount of threads as there are potential contour lines, leaving the counter resident on the GPU. This yields a degraded runtime of 1551 µs (1137 µs for first and 414 µs in the second kernel). The second kernel wastes the vast majority of its threads doing nothing.
+In a first attempt, we launch the second kernel with the same amount of threads as there are potential contour lines, leaving the counter resident on the GPU. This yields a degraded runtime of 1551 µs, of which 1137 µs are attributed to first and 414 µs to the second kernel. In this implementation, the second kernel wastes the vast majority of its threads doing nothing.
 
-We can do better by copying the counter back to the CPU and launching the second kernel with exactly as many threads as there are segments to compute. Despite the added cost of the device-to-host transfer, the much smaller dispatch more than compensates, improving the overall runtime down to 1194 µs (using 17 µs and 40 µs for the memory transfer and second kernel respectively).
+We can do better by copying the counter back to the CPU and launching the second kernel with exactly as many threads as there are segments to compute. Despite the added cost of the device-to-host transfer, the much smaller dispatch more than compensates, improving the overall runtime down to 1194 µs, now using 17 µs and 40 µs for the memory transfer and second kernel respectively.
 
 ```C++
 marching_squares_phase_1<<<...>>>(heights, grid_size, contour_count, coordinates, threshold);
@@ -376,10 +387,10 @@ cudaMemcpy(&contour_count_h, contour_count, sizeof(int), cudaMemcpyDeviceToHost)
 marching_squares_phase_2<<<...>>>(heights, grid_size, contour_count_h, coordinates, threshold, contours);
 ```
 
-Splitting the kernel into two parts, we improved our algorithm by approximately 16%. In theory, we are still left with warp divergence in the second kernel. But the two-segment case is so rare, that we can essentially neglect it. Subdividing the kernel further would introduce additional overhead that outweighs any gains from eliminating this remaining divergence.
+Splitting the kernel into two parts, we improved our algorithm by approximately 16%. In theory, we are still left with warp divergence in the second kernel due the differences for the one and two output segment cases. But the two segment case is so rare, that we can essentially neglect it. Subdividing the kernel further would introduce additional overhead that outweighs any gains from eliminating this remaining divergence.
 
 #### Storing the height grid in shared memory
-As a further benefit of having two kernels, we can now profile each stage. An obvious next optimization is shared memory. With computation happening in $2\times2$ subgrids, most data is actually reused by other threads. With square blocks of size $n$, the amount of repeatedly loaded halo cells is $4n-1$. A quite low amount when compared to $n^2$, the amount of inner cells that are loaded only once. Using shared memory, the number of bytes loaded by such a block approaches one quarter of the original amount as $n\to\infty$.
+As a further benefit of having two kernels, we can now profile each stage separately. An obvious next optimization that comes to mind is shared memory. With computation happening in $2\times2$ subgrids, most data is actually reused by other threads. If we store square blocks of size $n$ in shared memory, the amount of repeatedly loaded halo cells is $2(n-2)+3=2n-1$. A quite low number when compared to $n^2$, the amount of inner cells that are loaded only once. Comparing this to $4n^2$, the number of cells loaded in the naive solution, shared memory allows us to in theory load only one quarter of the original amount as $n\to\infty$.
 
 ```C++
 int col = blockIdx.x * BLOCK_DIM_X + threadIdx.x;
@@ -396,12 +407,12 @@ __syncthreads();
 // Continue..
 ```
 
-Trying it in practice, we however observe a performance far worse than that of a naive implementation loading all data separately. The use of shared memory now adds additional instructions (due to the branching logic when loading data) and more importantly, barriers to our kernel. We now see way more warps stalling and doing nothing waiting for their block's data to arrive.
+Trying it in practice, we however observe a performance far worse than that of the naive implementation loading all data separately. The use of shared memory now adds additional instructions and more importantly, barriers to our kernel. We can now observe way more warps stalling and doing nothing, waiting for their block's data to arrive. The amount of data reuse is too small for use to benefit from it. Especially if we consider that most memory accesses are likely served from L2 or even L1 cache.
 
 #### Packing the grid values for reuse
-We saw that even though there are repeated loads, the first kernel still exhibits a favorable memory access pattern. The second kernel, in its current form, unfortunately doesn't. Memory accesses can be scattered around the height grid and two neighboring threads need not access neighboring data. As a result, the L2 cache hit rate is only around 57.5%. This is a relatively low value considering that each thread accesses two pairs of consecutive data elements by default.
+We noticed in the previous section, that even though there are repeated loads, the first kernel still exhibits a favorable memory access pattern. The second kernel, in its current form, unfortunately doesn't. Memory accesses can be scattered around the height grid and two neighboring threads need not access neighboring data. As a result, the L2 cache hit rate is only around 57.5%. This is a relatively low value considering that each thread accesses two pairs of consecutive data elements by default.
 
-Since data reuse is limited, we apply the same idea as before and store the corresponding $2\times2$ subgrid values as packed `float4` vectors in the first kernel, alongside the grid indices. The second kernel can then load these packed values instead of fetching the data from the height grid directly. While this introduces an additional store instruction in the first kernel, it allows the second kernel to access its input in a fully coalesced manner.
+Since data reuse is limited, we apply the same idea as previously and store the corresponding $2\times2$ subgrid values as packed `float4` vectors in the first kernel, alongside the grid indices. The second kernel can then load these packed values instead of fetching the data from the height grid directly. While this introduces an additional store instruction in the first kernel, it allows the second kernel to access its input in a fully coalesced manner.
 
 ```C++
 __global__ void marching_squares_phase_1(float const* heights, Size grid_size, int* contour_count, int2* coordinates, float4* subgrid_heights, float threshold) {
@@ -417,7 +428,8 @@ __global__ void marching_squares_phase_1(float const* heights, Size grid_size, i
 
         if (local_count > 0) {
             coordinates[offset] = int2(col, row);
-            subgrid_heights[offset] = float4(...); // The 4 subgrid values
+            // The 4 subgrid values
+            subgrid_heights[offset] = float4(...); 
         }
         if (local_count > 1) {
             coordinates[offset + 1] = int2(-1, -1);
@@ -444,12 +456,12 @@ __global__ void marching_squares_phase_2(int contour_count, int2 const* coordina
 }
 ```
 
-Although this optimization reduces the runtime of the second kernel by approximately 39%, it also increases the runtime of the first kernel slightly by about 1% due to the additional stores. Overall, the combined runtime appears to be marginally lower than that of the original implementation. However, we were unable to reproduce this improvement consistently across repeated measurements. Given the additional implementation complexity and the lack of a reproducible speedup, we decided not to pursue this optimization further.
+Although this optimization reduces the runtime of the second kernel by approximately 39%, it also increases the runtime of the first kernel slightly by about 1% due to the additional store instructions. Overall, the combined runtime appears to be marginally lower than that of the original implementation. However, we were unable to reproduce this improvement consistently across repeated measurements. The second kernel is simply too small when compared to the first, in order to make a difference here. Given the additional implementation complexity and the lack of a reproducible speedup, we decided not to pursue this optimization further.
 
 #### Reducing pressure on the atomic counter
-We need to find another way to optimize our kernels further. Looking at the warp stall statistics of the first, we observe a very high cycle count for *Stall Long Scoreboard*. This metric indicates that our kernel's warps spend a lot of their lifetime waiting on data from DRAM to arrive. This might be due to the kernel's general memory requirements but inspecting the code we actually see another culprit. Every thread increments the global atomic counter for the number of output segments, regardless of whether its increment is zero.
+We need to find another way to optimize our kernels. Looking at the warp stall statistics of the first, we observe a very high cycle count for *Stall Long Scoreboard*. This metric indicates that our kernel's warps spend a lot of their lifetime waiting on data from DRAM to arrive. This might be due to the kernel's general memory requirements but inspecting the code we actually see another culprit. Every thread increments the global atomic counter for the number of output segments, regardless of whether its increment is zero or not.
 
-All of these operations put a lot of pressure on the counter. After modifying the code to only increment the counter when a segment is actually produced (an optimization nvcc cannot perform itself, as it may not elide atomic operations), we find the above stall metric almost halved, now averaging only around 6 cycles. Consequently, the amount of *Eligible Warps Per Scheduler* is now increased by 73% to 1.53. Overall, reducing the contention on the atomic variable decreased the runtime of the first kernel from 1.81 ms to 1.06 ms.
+All of these operations put a lot of pressure on the counter. After modifying the code to only increment the counter when a segment is actually produced, we find the above stall metric almost halved, now averaging only around 6 cycles. This is an optimization nvcc cannot perform itself, as it may not elide atomic operations. Consequently, the amount of *Eligible Warps Per Scheduler* is now increased by 73% to 1.53. Overall, reducing the contention on the atomic variable decreased the runtime of the first kernel from 1.81 ms to 1.06 ms.
 
 ```C++
 int local_count = count_for_type(type);
@@ -460,20 +472,20 @@ if (local_count > 0) {
 }
 ```
 
-We could try to go further, aggregate the increments, and only write to the counter once per warp/block. However, this does not give us much at this point. As we saw in the analysis, the case of having a grid vertex produce a contour segment is very rare. So rare that any synchronization actually degrades performance. We illustrate the runtime of the kernel variants in the below table.
+We could try to go further, aggregate the increments per warp or block, and only write to the counter once per each grouping. Instead of having each thread increment the global counter, only one per warp, respectively block, would be responsible to increment it with the collected aggregate. Each individual thread within this grouping would then able to determine its global index by looking at the previously obtained global index of their warp, respectively block, and their local index within it. However, these approaches do not give us much at this point in time. As we saw in the analysis of the marching squares algorithm, the case of having a grid vertex produce a contour segment is very rare. So rare that any form of synchronization actually degrades performance. We illustrate the runtime of the kernels in the mentioned variants in the below table.
 
-|             | Write from each thread | Write if > 0 | Write once per warp | Write once per block |
+| **Method**  | Write from each thread | Write if > 0 | Write once per warp | Write once per block |
 | ----------- | ---------------------- | ------------ | ------------------- | -------------------- |
 | **Runtime** | 1.81 ms                | 1.06 ms      | 1.49 ms             | 1.25 ms              |
 
 #### Computing contours at multiple thresholds
-So far we computed our height grid's contours only at a single threshold. For our specific use case we, however, want to display contours at various thresholds. Our chosen threshold sits at the midpoint of the grid's height range. The further we move a threshold towards the range's bounds, the fewer output segments it will produce. The below table illustrates the amount of output segments for evenly spaced thresholds across the grid's height range. To profile the marching squares kernel in the multi-threshold setup, we will use 100 values, evenly spaced across the same range. This produces a total of 4,753,797 output segments.
+So far we computed our height grid's contours only at a single threshold. For our specific use case in this application we, however, want to be able to display contours at various thresholds. Our so far chosen threshold sits at the midpoint of the grid's height range. The further we move it threshold towards the range's bounds, the fewer output segments it would produce. The below table illustrates the amount of output segments for evenly spaced thresholds across the grid's height range. To profile the marching squares kernel in the multi-threshold setup from here on, we will use 100 values, evenly spaced across the same range from $-\frac{3}{5}$ to $\frac{3}{5}$. This produces a total of 4,753,797 output segments.
 
-|              | $-\frac{3}{5}$ | $-\frac{2}{5}$ | $-\frac{1}{5}$ | $0$     | $\frac{1}{5}$ | $\frac{2}{5}$ | $\frac{3}{5}$ |
+| **Position** | $-\frac{3}{5}$ | $-\frac{2}{5}$ | $-\frac{1}{5}$ | $0$     | $\frac{1}{5}$ | $\frac{2}{5}$ | $\frac{3}{5}$ |
 | ------------ | -------------- | -------------- | -------------- | ------- | ------------- | ------------- | ------------- |
 | **Segments** | 662            | 7,540          | 69,385         | 134,516 | 76,476        | 10,044        | 86            |
 
-We further make two assumptions: we will only know the exact number of thresholds at runtime (meaning we cannot place them into constant memory) and do not care about the ordering in which the output segments are produced. The latter opens the way for optimizations as it loosens restrictions on how data should be stored. However, it also takes away the option to differentiate between contours at different thresholds, e.g. if we wanted to color each one differently.
+We also make two assumptions: we will only know the exact number of thresholds at runtime, meaning we cannot place them into constant memory, and do not care about the ordering in which the output segments are produced. The latter one opens the way for optimizations as it loosens restrictions on how data should be stored. However, it also takes away the option to differentiate between contours at different thresholds, e.g. if we wanted to color each one differently.
 
 #### Enabling parallelism across multiple thresholds
 What currently blocks us from computing contours at multiple thresholds in parallel is that we do not know which grid indices correspond to which threshold. From the first kernel, we currently save only the indices at which the second kernel then computes the contour segments. If we were to compute multiple thresholds in parallel, the second kernel would not know which threshold to use. Without any modifications, this leaves us naively computing the segments sequentially, one threshold after another.
@@ -536,11 +548,11 @@ cudaMemcpy(&contour_count_h, contour_count, sizeof(int), cudaMemcpyDeviceToHost)
 marching_squares_phase_2<<<...>>>(heights, grid_size, contour_count_h, coordinates, subgrid_thresholds, contours);
 ```
 
-We are still left with quite some kernel launches. Even though we run them in parallel, the first kernel is launched 100 times. CUDA Graphs are a great way to speed up such a situation. Instead of launching each kernel individually from the host, we can capture the sequence of launches into a graph once and then replay this graph as a single unit for every subsequent call. This removes most of the CPU-side launch overhead that would otherwise accumulate.
+In this approach, we are still left with quite some kernel launches. Even though we run them in parallel, the first kernel is launched 100 times. CUDA Graphs are a great way to speed up such a situation. Instead of launching each kernel individually from the host, we can capture the sequence of launches into a graph once and then replay this graph as a single unit for every subsequent call. This removes most of the CPU-side launch overhead that would otherwise accumulate.
 
-To avoid these multiple launches of the first kernel altogether, we can also vectorize them. If we make the thresholds a third dimension after the grid's height and width, we can launch a single kernel on a 3-dimensional grid and compute all thresholds together. This approach brings us back to two kernel launches, but now computing contours at multiple thresholds. The first, 3-dimensional kernel populates the temporary index and threshold buffers. The second kernel then computes the segments from these.
+To avoid these multiple launches of the first kernel altogether, we can also vectorize them. If we make the thresholds a third dimension after the grid's height and width, we can launch a single kernel on a 3-dimensional grid and compute all thresholds together. This approach brings us back to two kernel launches, but now computing contours at multiple thresholds in the first one. The first, 3-dimensional kernel populates the temporary index and threshold buffers. The second kernel then computes the segments from these.
 
-As a consequence of this vectorization, we can no longer pass the thresholds directly as the first kernel's parameters. Since we only know the threshold count at runtime, this leaves us no option other than passing a pointer to them instead. Each thread then has to load its threshold dynamically at runtime.
+As a consequence of this vectorization, we can no longer pass the thresholds directly as the first kernel's parameters. Since we only know the threshold count at runtime, this leaves us no option other than passing a pointer to them instead. Each thread then has to load its threshold dynamically at runtime from its index along the z-axis.
 
 ```C++
 __global__ void marching_squares_phase_1(float const* heights, Size grid_size, int* contour_count, int2* coordinates, float* subgrid_thresholds, float const* thresholds, int threshold_count) {
@@ -555,7 +567,7 @@ __global__ void marching_squares_phase_1(float const* heights, Size grid_size, i
 ```
 
 #### Comparing the four approaches
-The performance of these four approaches is reported in the table below. In the first row, we show the total runtime for each, spanning both the (potentially multiple) first kernel launches and the second kernel launch. As before, these times were measured using CUDA events and calculated as the average of 100 runs after 5 warmup iterations. In the second and third rows, we report the runtime of the first and second kernels respectively. These were measured using Nsight Compute, with a single threshold placed at the height grid's midpoint.
+The performance of these four approaches is reported in the below table. In the first row, we show the total runtime for each, spanning both the (potentially multiple) first kernel launches and the second kernel launch. As before, these times were measured using CUDA events and calculated as the average of 100 runs after 5 warmup iterations. In the second and third rows, we report the runtime of the first and second kernels respectively. These were measured using Nsight Compute, with a single threshold placed at the height grid's midpoint.
 
 |                   | Naive    | Batched  | Batched & CUDA Graphs | Vectorized |
 | ----------------- | -------- | -------- | --------------------- | ---------- |
@@ -565,10 +577,10 @@ The performance of these four approaches is reported in the table below. In the 
 
 We observe an unexpected behavior. None of the modifications were actually able to improve the overall runtime. The processors are already busy computing contours at one threshold, so our effort to parallelize could not help much. Also, the batched version's additional DRAM storage and stream management overhead actually seem to be working against it. Using CUDA Graphs, we are able to make up for this somewhat, but still do not manage to outperform the naive implementation.
 
-The vectorized approach performs rather poorly as well. Even though it only launches two kernels, its runtime is worse than the naive version's. In particular, the added dependency of indirectly loading the thresholds seems to hurt the first kernel's performance. We can also see that the second kernel plays only a minor role in the overall setup.
+The vectorized approach performs rather poorly as well. Even though it only launches two kernels, its runtime is worse than the naive version's. In particular, the added dependency of indirectly loading the thresholds seems to hurt its first kernel's performance. We also notice that the second kernel plays only a minor role in the overall setup.
 
 #### Coarsening the threads along the thresholds
-Despite its initially weak performance, we decide to continue with the vectorized implementation. Its shape gives us a huge advantage: the ability to coarsen threads along the new threshold dimension. Instead of having one thread compute segments at one $2\times2$ subgrid and one threshold, we can instead let it do so for multiple thresholds. The subgrid stays fixed and doesn't need to be reloaded throughout these computations. This saves us costly time, as the thread now only stalls once waiting for data from DRAM, instead of stalling for each threshold as in the un-coarsened version.
+Despite its initially weak performance, we decide to continue with the vectorized implementation. Its shape gives us a huge advantage: the ability to coarsen threads along the new threshold dimension. Instead of having one thread compute segments at one $2\times2$ subgrid and one threshold, we can instead let it do so for multiple thresholds. The subgrid stays fixed and doesn't need to be reloaded throughout these repeated computations. This saves us costly time, as the thread now only stalls once waiting for its data from DRAM, instead of stalling for each threshold as in the un-coarsened version.
 
 ```C++
 int layer = (blockIdx.z * blockDim.z + threadIdx.z) * COARSE_FACTOR;
@@ -584,7 +596,7 @@ for (int c = 0; c < COARSE_FACTOR; ++c) {
 }
 ```
 
-We measured the runtimes of the vectorized kernel at various coarsening factors and show them in the table below. As before, we report them once for the individual kernels, measured with Nsight Compute, and once for their combination, measured with CUDA events. Starting already at a coarsening factor of two, we can see the runtime rapidly declining, outperforming the naive version considerably. Please note that before, we profiled the individual kernels at only one threshold, while now we do so for all 100, hence the difference in runtime.
+We measured the runtimes of the vectorized kernel at various coarsening factors and show them in the below table. As before, we report them once for the individual kernels, measured with Nsight Compute, and once for their combination, measured with CUDA events. Starting already at a coarsening factor of two, we can see the runtime rapidly declining, outperforming the naive version considerably. Please note that in the previous section, we profiled the individual kernels at only one threshold, while now we do so for all 100, hence the difference in runtime.
 
 | Coarse Factor     | 1         | 2        | 4        | 8        | 16       | 32       | 64       | 128      |
 | ----------------- | --------- | -------- | -------- | -------- | -------- | -------- | -------- | -------- |
@@ -594,12 +606,12 @@ We measured the runtimes of the vectorized kernel at various coarsening factors 
 
 The reduced memory traffic really paid off. As a consequence, we observe the L1 and L2 cache hit rates increase by 28% and 95% respectively, when comparing the un-coarsened version to the version coarsened by a factor of 128. Interestingly, the second kernel also improved. This kernel loads the height grid's data from the grid indices that were stored in the temporary buffer by the first kernel. The closer together the data represented by these indices are, the more efficiently they can be loaded from DRAM. As a consequence of the thread blocks staying longer in one area of the height grid, we get less variance in the resulting index buffer. An increased memory throughput of approximately 64% across all layers confirms this optimized pattern.
 
-Seeing that the runtime improvement starts to plateau after a coarsening factor of 16, we settle on 32 from here on. This value seems to be a good middle ground: large enough to give a measurable runtime improvement, yet small enough to avoid the diminishing returns and excessive coarsening seen at higher factors.
+Seeing that the runtime improvement slowly starts to plateau after a coarsening factor of 16, we settle on 32 from here on. This value seems to be a good middle ground: large enough to give a measurable runtime improvement, yet small enough to avoid the diminishing returns and excessive coarsening seen at higher factors.
 
 #### Storing the thresholds in shared memory
 Now that each thread is fetching multiple thresholds from DRAM, we can take our second attempt at making use of shared memory. While in our previous, unsuccessful attempt with the height grid each vertex was only shared by a maximum of four threads, we now share thresholds across the full block. With our current grid configuration of $16\times16\times1$ for launching the first kernel, the reuse is quite high.
 
-We see two ways of utilizing shared memory in this situation. For one, we could collectively load the full 32 (our chosen coarse factor) thresholds into shared memory upon kernel entry and then synchronize. Alternatively, we could also have a single thread load the respective threshold value into shared memory at each iteration step. With 32 required barriers, the synchronization effort is rather extensive in the latter approach.
+We see two ways of utilizing shared memory in this situation. For one, we could collectively load the full 32 (our chosen coarse factor) thresholds into shared memory upon kernel entry and then synchronize. Alternatively, we could also have a single thread load the respective threshold value into shared memory at each iteration step. With 32 required barriers, the synchronization effort would be rather extensive in this latter approach.
 
 ```C++
 int layer = (blockIdx.z * blockDim.z + threadIdx.z) * COARSE_FACTOR;
@@ -625,7 +637,7 @@ for (int c = 0; c < COARSE_FACTOR; ++c) {
 }
 ```
 
-We profiled both approaches. In the latter, we observe a very negligible performance increase. Intuitively this makes sense. Storing the threshold in shared memory does not give us much. We introduced additional barriers for a value that very likely was already inside L1 Cache. Looking at Nsight Compute, we see this suspicion confirmed. L1 Cache hit rate decreased by 18% while warps now spend on average 2.5 cycles per instruction stalling at a barrier. Given these new constraints, the slight performance increase is rather interesting.
+We profiled both approaches. In the latter, we observe a very negligible performance increase. Intuitively this makes sense. Storing the threshold in shared memory does not give us much. We introduced additional barriers for a value that very likely was already inside L1 Cache. Looking at Nsight Compute, we see this suspicion confirmed. L1 Cache hit rate decreased by 18% while warps now spend on average 2.5 cycles per instruction stalling at a barrier. Given these new constraints, the slight performance increase is actually rather remarkable.
 
 Moving on to the former approach, we see a more pronounced effect. The first kernel's runtime is decreased by 7 ms, down to now only 41.94 ms. While the kernel requires more effort initially, loading all thresholds and synchronizing, it is able to move very fast from there on. Except for the atomic counter, which is still required to determine the output slot, no more data needs to be loaded from DRAM. As before, we observe a decreased L1 Cache hit rate as a side effect. Seeing the benefit this approach has on the first kernel's performance, we use it from here on.
 
@@ -648,7 +660,7 @@ __syncthreads();
 To be fair, we should add that only about half of this 7 ms performance gain can be attributed to the use of shared memory itself. The other half came from hoisting the repeated `if (layer + c >= threshold_count)` check out of the loop into a single computation of `layer_count`. While it only became necessary in the shared memory version, this single change would also have helped the basic implementation.
 
 #### Unrolling the loop over the thresholds
-Having a loop over the individual thresholds inside our kernel, we can hint to the compiler to unroll it. An unrolled loop exposes more independent instructions to the scheduler, which it can then work with to exploit instruction level parallelism and better hide latencies. While the pragma to unroll a loop is only a hint to the compiler, it seems to have followed through with it in our case. When hinting to unroll in powers of 2 for the range 1 to 32, we can see actual performance differences which we show in the below table.
+Having a loop over the individual thresholds inside our kernel, we can hint the compiler to unroll it. An unrolled loop exposes more independent instructions to the scheduler, which it can then work with to exploit instruction level parallelism and better hide latencies. While the pragma to unroll a loop is only a hint to the compiler, it seems to have followed through with it in our case. When hinting to unroll in powers of 2 for the range 1 to 32, we can see actual performance differences which we show in the below table.
 
 
 ```C++
@@ -660,7 +672,7 @@ int compute_layers = min(COARSE_FACTOR, threshold_count - layer);
 
 #pragma unroll 16
 for (int i = 0; i < compute_layers; ++i) {
-    float threshold = thresholds_s[blockIdx.z][i];
+    float threshold = thresholds_s[threadIdx.z][i];
 
     int type = compute_type(heights, grid_size, threshold);
     int local_count = count_for_type(type);
@@ -671,22 +683,38 @@ for (int i = 0; i < compute_layers; ++i) {
 }
 ```
 
-We observe a noticeable decrease in runtime up to a factor of 16, after which the runtime increases again. At a factor of 32, we basically eliminate the loop entirely for all but the boundary blocks, given the coarse factor of 32. At the most performant unroll factor of 16, we leave it at only two iterations. Interestingly, the compiler seems to have already unrolled the loop by a factor of two on its own, as explicitly setting it to 1, i.e. having no unrolling at all, shows a noticeable performance degradation.
+We observe a noticeable decrease in runtime up to a factor of 16, after which the runtime increases again. At a factor of 32, we basically eliminate the loop entirely for all but the boundary blocks, given the chosen coarse factor of 32. At the most performant unroll factor of 16, we leave the loop at only two iterations. Interestingly, the compiler seems to have already unrolled the loop by a factor of two on its own, as explicitly setting it to 1, i.e. having no unrolling at all, shows a noticeable performance degradation.
 
 | Unroll Factor | None     | 1        | 2        | 4        | 8        | 16       | 32       |
 | ------------- | -------- | -------- | -------- | -------- | -------- | -------- | -------- |
 | **Runtime**   | 41.94 ms | 43.12 ms | 41.65 ms | 38.55 ms | 36.99 ms | 36.81 ms | 38.40 ms |
 
-Looking at the profiler output, we have another interesting observation. Irrespective of the chosen unroll factor, the threads use the same amount of registers. The compiler seems to be pretty good at reusing registers. However this also suggests the performance increase doesn't really come from an improved instruction level parallelism. We expect such a tight register reuse to introduce data hazards which directly would contradict an increased parallelism. Instead the performance gain appears to be coming from a reduced control overhead for the loop. We see issued instructions decreased by 15% and branch instructions decreased by 23% when comparing the kernel with unroll factor 16 against the base implementation (no pragma).
-
-Looking at the profiler output, we have another interesting observation. Irrespective of the chosen unroll factor, the threads use the same number of registers. The compiler seems to be pretty good at reusing registers. However, this also suggests the performance increase doesn't really come from improved instruction level parallelism. We expect such tight register reuse to introduce data hazards, which would directly contradict an increase in parallelism. Instead, the performance gain appears to be coming from a reduced loop control overhead. We see issued instructions decrease by 15% and branch instructions decrease by 23% when comparing the kernel with unroll factor of 16 against the base implementation using no pragma.
+Looking at the profiler output, we have another interesting observation. Irrespective of the chosen unroll factor, the threads use the same amount of registers. The compiler seems to be pretty good at reusing registers. However this also suggests the performance increase doesn't really come from an improved instruction level parallelism. We expect such a tight register reuse to introduce data hazards which directly would contradict an increased parallelism. Instead the performance gain appears to be coming from a reduced control overhead for the loop. We see issued instructions decreased by 15% and branch instructions decreased by 23% when comparing the kernel with unroll factor 16 against the base implementation with no compiler hint at all.
 
 #### Using vector loads for the thresholds
-Trying to repeat the success we have had so far using vector loads and stores to speed up our kernels, we can try a similar approach when loading the thresholds. If we guarantee their 16-byte alignment and have the coarse factor be a multiple of 4, the change to the code is rather small. Testing it out, however, we observe only a minor speedup of 1.23 ms down to 35.58 ms. Analyzing the baseline kernel, we find it to be very much compute bound, with a compute throughput of 83% and a memory throughput of only 33%. Coarsening the kernel and the subsequent modifications allowed us to move from being memory bound to being compute bound.
+Trying to repeat the success we have had so far using vector loads and stores to speed up our kernels, we can try a similar approach when loading the thresholds. If we guarantee their 16-byte alignment and have the coarse factor be a multiple of 4, the change to the code is rather small. Testing it out, however, we observe only a minor speedup of 1.23 ms down to 35.58 ms. Taking a step back and analyzing the baseline kernel, we find it to be very much compute bound, with a compute throughput of 83% and a memory throughput of only 33%. After coarsening the kernel and applying the subsequent modifications, the kernel switched from being memory bound to being compute bound.
 
-Given this baseline, the only small performance gain makes sense. We are trying to optimize a memory pipeline that isn't our actual bottleneck. The additional vector loads only brought memory throughput further down to 15%. However, the actual speedup seems to be coming from a reduction in issued instructions by 3%, which corresponds with the decrease in the kernel's runtime.
+Given this baseline, the only small performance gain now makes sense. We were trying to optimize a memory pipeline that wasn't our actual bottleneck. The additional vector loads only brought memory throughput further down to 15%. Yhe actual speedup thereby seems to be coming from a reduction in issued instructions by 3%, which closely correlates with the decrease in the kernel's runtime.
 
 ```C++
+int layer = (blockIdx.z * BLOCK_DIM_Z + threadIdx.z) * COARSE_FACTOR;
+int thread_id = threadIdx.z * blockDim.y * blockDim.x + threadIdx.y * blockDim.x + threadIdx.x;
+int stride = BLOCK_DIM_Z * blockDim.y * blockDim.x;
+int layer_count = min(BLOCK_DIM_Z * COARSE_FACTOR, threshold_count - layer);
+
+constexpr int COARSE_FACTOR_4 = COARSE_FACTOR / 4;
+
+__shared__ float thresholds_s[BLOCK_DIM_Z][COARSE_FACTOR_4];
+
+int float4_count = (layer_count + 3) / 4;
+int layer4 = layer / 4;
+
+for (int i = thread_id; i < float4_count; i += stride) {
+    thresholds_s[i / COARSE_FACTOR_4][i % COARSE_FACTOR_4] = thresholds[layer4 + i];
+}
+
+__syncthreads();
+
 #pragma unroll 4
 for (int i = 0; i < compute_layers; ++i) {
     float4 t = thresholds_s[i];
@@ -694,16 +722,75 @@ for (int i = 0; i < compute_layers; ++i) {
 
     #pragma unroll 4
     for (int j = 0; j < 4; ++j) {
-        int type = compute_type(top_left, top_right, bottom_right, bottom_left, threshold_array[j]);
+        int type = compute_type(heights, grid_size, threshold_array[j]);
         int local_count = count_for_type(type);
 
         // Continue..
+    }
+}
 ```
 
-With the only slight performance increase, the additional requirement of having the number of thresholds be a multiple of 4 seems to outweigh the benefits. We could still store thresholds that aren't evenly divisible by four in a 16-byte aligned array and load them in chunks of four. However, this introduces new instructions to assess boundary conditions that would actually lead to a performance degradation. Alternatively, we can also be sneaky and store values outside the height grid's allowed height range in the array's boundary positions. That way, we would compute contour segments at another threshold, which, however, is guaranteed to produce no segments. Still, all of these changes would add complexity to our code, which we simply deem not worth it.
+With the only slight performance increase, the additional requirement of having the number of thresholds be a multiple of 4 seems to outweigh the benefits. We could still store thresholds that aren't evenly divisible by four in a 16-byte aligned array and load them in chunks of four. However, this introduces new instructions to assess boundary conditions that would actually lead to a performance degradation. Alternatively, we could also be sneaky and store values outside the height grid's allowed height range in the array's boundary positions. That way, we would compute contour segments at another threshold, which, however, is guaranteed to produce no segments at all. Still, all of these changes would add complexity to our code, which we simply deem not worth it.
 
 #### Privatizing the output data
-We need to look elsewhere for a more meaningful improvement.
+A common approach to optimize a filter type kernel is to apply block privatization. In the chapter about reducing the pressure on the atomic counter, we already quickly tried to aggregate the counts locally per block before writing them once to the global counter. Back then, the rarity of actually containing an output segment prevented this method from being useful to us. Now that we coarsen the kernel along the thresholds, we should get the coarse factor times more output segments. With out chosen factor of 32, each block is on average responsible for about 12 segments. This is still a pretty sparse distribution, but at least better than before.
+
+However, differently to before, where we had only one threshold per block, we now can no longer can keep any potential output data only in registers until their slot in global memory is determined. Each height grid vertex could in theory produce up to $2f_c$, where $f_c$ is the coarse factor, output segments. Even though we know that in practice, this number will almost always be way lower than this, we still cannot guarantee. To not run out of registers and having to spill them to DRAM, we can instead buffer the output data in shared memory. As a neat benefit of this modification, we write the output in a coalesced manner and do not scatter it in unconnected locations as before.
+
+```C++
+// Load heights and store thresholds into shared memory
+
+__shared__ int2 coordinates_s[BLOCK_DIM_Z][BUFFER_SIZE];
+__shared__ float subgrid_thresholds_s[BLOCK_DIM_Z][BUFFER_SIZE];
+__shared__ int block_count_s;
+__shared__ int global_offset_s;
+
+if (thread_id == 0) {
+    block_count_s = 0;
+}
+
+__syncthreads();
+
+#pragma unroll 16
+for (int i = 0; i < compute_layers; ++i) {
+    float threshold = thresholds_s[i];
+
+    int type = compute_type(heights, grid_size, threshold);
+    int local_count = count_for_type(type);
+
+    if (local_count >0) {
+        cuda::atomic_ref<int, cuda::thread_scope_block> block_count_ref(block_count_s);
+        int block_offset = block_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
+
+        coordinates_s[block_offset] = int2(col, row);
+        subgrid_thresholds_s[block_offset] = threshold;
+
+        if (local_count == 2) {
+            coordinates_s[block_offset + 1] = int2(-1, -1);
+        }
+    }
+}
+
+__syncthreads();
+
+if (thread_id == 0 && block_count_s > 0) {
+    cuda::atomic_ref<int, cuda::thread_scope_device> global_count_ref(*count);
+    global_offset_s = global_count_ref.fetch_add(block_count_s, cuda::memory_order_relaxed);
+}
+
+__syncthreads();
+
+for (int i = thread_id; i < block_count_s; i += stride) {
+    coordinates[global_offset_s + i] = coordinates_s[i];
+    thresholds_s[global_offset_s + i] = subgrid_thresholds_s[i];
+}
+```
+
+While we now saved registers from being overused, we shifted the problem to shared memory. On our profiling GPU, shared memory is limited to 100 KiB per streaming multiprocessor. To get full occupancy with the possible 1536 threads, we cannot use more than 66.7 bytes per thread. With our coarse factor of 32, this is way too little to potentially store all the potentially required data. We can still get a feeling for this method by simply limiting the buffer size to fit for now. With our profiling grid, no block produces more than 140 output segments. An amount, we easily can accommodate.
+
+Trying it out, we are however hit with a surprise. Against our expectation, we see a performance about 1.3 ms worse than the un-privatized implementation. The output producing threads are still to sparsely distributed in order for the kernel to benefit from this modification. ... Even if we experimentally increase the coarse factor to the full 100 thresholds, we observe the same behavior, albeit now with a smaller residue.
 
 // Block write, privatization
+// Threshold check
+// Output compactification
 // Outlook, Intro, Code snippets
