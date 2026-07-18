@@ -88,30 +88,9 @@ void launch_marching_squares() {
                                                                tmp_coordinates_buffer.data, tmp_thresholds_buffer.data);
   };
 
-  auto func_privatized = [&]() {
-    dim3 block_dim_1(16, 16, 1);
-    dim3 grid_dim_1(compute::ceil_div(SIZE.width - 1, block_dim_1.x), compute::ceil_div(SIZE.height - 1, block_dim_1.y),
-                    compute::ceil_div(THRESHOLD_COUNT, block_dim_1.z * COARSE_FACTOR));
-    perf::marching_squares_part_1_privatized<<<grid_dim_1, block_dim_1>>>(
-        c_heights, count_buffer.data, max_contours_per_threshold * THRESHOLD_COUNT, tmp_coordinates_buffer.data,
-        thresholds_buffer.data, tmp_thresholds_buffer.data, THRESHOLD_COUNT);
-
-    int count;
-    cudaMemcpy(&count, count_buffer.data, sizeof(int), cudaMemcpyDeviceToHost);
-
-    dim3 block_dim_2(256);
-    dim3 grid_dim_2(compute::ceil_div(count, block_dim_2.x));
-    perf::marching_squares_part_2<<<grid_dim_2, block_dim_2>>>(c_heights, contour_buffer.data, count,
-                                                               tmp_coordinates_buffer.data, tmp_thresholds_buffer.data);
-  };
-
   setup();
   func_base();
   // plot(height_grid_buffer.toVector(), SIZE, contour_buffer.toVector(), "base");
-
-  setup();
-  func_privatized();
-  // plot(height_grid_buffer.toVector(), SIZE, contour_buffer.toVector(), "privatized");
 }
 
 } // namespace perf

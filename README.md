@@ -735,7 +735,7 @@ With the only slight performance increase, the additional requirement of having 
 #### Privatizing the output data
 A common approach to optimize a filter type kernel is to apply block privatization. In the chapter about reducing the pressure on the atomic counter, we already quickly tried to aggregate the counts locally per block before writing them once to the global counter. Back then, the rarity of actually containing an output segment prevented this method from being useful to us. Now that we coarsen the kernel along the thresholds, we should get the coarse factor times more output segments. With out chosen factor of 32, each block is on average responsible for about 12 segments. This is still a pretty sparse distribution, but at least better than before.
 
-However, differently to before, where we had only one threshold per block, we now can no longer can keep any potential output data only in registers until their slot in global memory is determined. Each height grid vertex could in theory produce up to $2f_c$, where $f_c$ is the coarse factor, output segments. Even though we know that in practice, this number will almost always be way lower than this, we still cannot guarantee. To not run out of registers and having to spill them to DRAM, we can instead buffer the output data in shared memory. As a neat benefit of this modification, we write the output in a coalesced manner and do not scatter it in unconnected locations as before.
+However, differently to before, where we had only one threshold per block, we now can no longer can keep any potential output data only in registers until their slot in global memory is determined. Each height grid vertex could in theory produce up to $2f_c$, where $f_c$ is the coarse factor, output segments. Even though we know that in practice, this number will almost always be way lower than this, we still have no guarantee for it. To not run out of registers and having to spill them to DRAM, we can instead buffer the output data in shared memory. As a neat benefit of this modification, we will collectively by all threads write the output in a coalesced manner at the kernel's end and do not scatter it in unconnected locations as we do in the previous version.
 
 ```C++
 // Load heights and store thresholds into shared memory
@@ -758,14 +758,14 @@ for (int i = 0; i < compute_layers; ++i) {
     int type = compute_type(heights, grid_size, threshold);
     int local_count = count_for_type(type);
 
-    if (local_count >0) {
+    if (local_count > 0) {
         cuda::atomic_ref<int, cuda::thread_scope_block> block_count_ref(block_count_s);
         int block_offset = block_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
 
         coordinates_s[block_offset] = int2(col, row);
         subgrid_thresholds_s[block_offset] = threshold;
 
-        if (local_count == 2) {
+        if (local_count > 0) {
             coordinates_s[block_offset + 1] = int2(-1, -1);
         }
     }
@@ -786,11 +786,14 @@ for (int i = thread_id; i < block_count_s; i += stride) {
 }
 ```
 
-While we now saved registers from being overused, we shifted the problem to shared memory. On our profiling GPU, shared memory is limited to 100 KiB per streaming multiprocessor. To get full occupancy with the possible 1536 threads, we cannot use more than 66.7 bytes per thread. With our coarse factor of 32, this is way too little to potentially store all the potentially required data. We can still get a feeling for this method by simply limiting the buffer size to fit for now. With our profiling grid, no block produces more than 140 output segments. An amount, we easily can accommodate.
+While we now saved registers from being overused, we shifted the problem to shared memory. On our profiling GPU, shared memory is limited to 100 KiB per streaming multiprocessor. To get full occupancy with the possible 1536 threads, we cannot use more than 66.7 bytes per thread. With our coarse factor of 32, this is way too little to potentially store all the potentially required data. We can nevertheless get a feeling for this method by simply limiting the buffer size to fit for now. With our profiling grid, no block produces more than 140 output segments. An amount, we easily can accommodate in shared memory.
 
-Trying it out, we are however hit with a surprise. Against our expectation, we see a performance about 1.3 ms worse than the un-privatized implementation. The output producing threads are still to sparsely distributed in order for the kernel to benefit from this modification. ... Even if we experimentally increase the coarse factor to the full 100 thresholds, we observe the same behavior, albeit now with a smaller residue.
+Looking at the metrics, we can see the added benefits we expected confirmed. The utilization of the L2 atomic input path handling our global atomic (*lts__d_atomic_input_cycles_active.max.pct_of_peak_sustained_elapsed*) decreased from 15.1% to now only 0.4%. Warps stalled on long latency memory dependencies (*Stall Long Scoreboard*) for only 0.02 instead of 0.12 cycles per issued instruction. The average number of useful global store bytes per transferred 32 byte sector (*smsp__sass_average_data_bytes_per_sector_mem_global_op_st.ratio*) increased from 13.96 to 26.83 due to improved coalescing.
 
-// Block write, privatization
+Upon observing the kernel's runtime, we are however hit with a surprise. The privatized implementation performs about 1.3 ms worse than its baseline. The output segments are simply still too sparsely distributed for the kernel to benefit from this modification. With a utilization of only 15.1%, the L2 atomic input path was far from sustained saturation to begin with. And while long-scoreboard stalls decreased, they were only a minor issue. In comparison, the additional synchronization increased barrier stalls (*Stall Barrier*) by 0.57 cycles per issued instruction. Additionally, we now have an increase in issued instructions by 2%. We increased the overhead of our kernel to solve an issue that never had a big impact to start with. Even if we experimentally increase the coarse factor to the full 100 thresholds, we observe the same behavior, albeit now with a smaller remaining runtime difference.
+
 // Threshold check
 // Output compactification
-// Outlook, Intro, Code snippets
+// Outlook, Intro, Review
+// Adapt the code
+// Beautify
