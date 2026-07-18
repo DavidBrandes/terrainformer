@@ -727,15 +727,46 @@ for (int i = lower; i < upper; ++i) {
 }
 ```
 
-Both approaches give us a very noticeable further decrease in runtime with the binary search version being the more performant of both. As before, we attribute most of these gains the decreased operations the algorithm has to perform. We illustrate the runtime of each version together we the number of issued instructions in the below table. Since we expect each thread to mostly perform less than one loop iteration on average now, we also get rid of the pragma to unroll them. Decreasing the operations of this kernel, it is now also no vo clearly longer compute bound. For the version using binary search to find the range, we observe a rather balanced compute throughput of 67% and a memory throughput of 52%.
+Both approaches give us a very noticeable further decrease in runtime with the binary search version being the more performant of both. As before, we attribute most of these gains the decreased operations the algorithm has to perform. We illustrate the runtime of each version together we the number of issued instructions in the below table. Since we expect each thread to mostly perform less than one loop iteration on average now, there is also no need for pragma to unroll them. Decreasing the operations of this kernel, it is now also no vo clearly longer compute bound. For the version using binary search to find the range, we observe a rather balanced compute throughput of 67% and a memory throughput of 52%.
 
 | Variant                 | Full Loop     | Early Continue | Linear Pruning | Binary Pruning |
 | ----------------------- | ------------- | -------------- | -------------- | -------------- |
 | **Runtime**             | 38.81 ms      | 16.66 ms       | 13.57 ms       | 12.20 ms       |
 | **Issued Instructions** | 2,577,154,302 | 1,019,366,501  | 793,036,861    | 670,953,713    |
 
+#### Revisiting threshold coarsening and vectorization
+While we are in theory still left with a loop over the, now pruned, thresholds, we expect them to be at most a single iterations for almost all threads. In order for a $2\times2$ subgrid to produce segments for two or more thresholds, they would either need to be very close together or the heights at this subgrid would need to be very steep. On our profiling grid, we in fact observe none such case. Previously we stopped at a coarse factor of 32 as we saw compute pipelines starting to become saturated. Now that we vastly increased instructions, we have a valid reason to visit this approach again. We can even go further and get rid of the 3rd threshold z-dimension altogether. This way each thread will be responsible for computing all potential contour segments at its respective subgrid.
 
-// Output compactification
+```C++
+int thread_id = threadIdx.y * blockDim.x + threadIdx.x;
+int stride = blockDim.x * blockDim.y;
+
+// The size of this buffer is now defined at kernel launch time
+// and equal to threshold_count
+extern __shared__ float thresholds_s[];
+
+for (int i = thread_id; i < threshold_count; i += stride) {
+thresholds_s[i] = thresholds[i];
+}
+
+__syncthreads();
+
+if (col < grid_size.width - 1 && row < grid_size.height - 1) {
+    // Load the subgrid and compute the loop range
+
+    for (int i = lower; i < upper; ++i) {
+        // Continue..
+    }
+}
+```
+
+Luckily we came back to this topic. The kernels runtime is now down at 6.63 ms, almost half of its baseline. As before we mostly attribute it to the by 61% decreased issued instructions, which are now at a value of 261,175,753. This decrease is also able to cover up quite a few things that turned worse now. We can observe warps stalling due pending memory requests. Possibly a result of an increased pressure on the atomic counter. We now get the same amount of requests in almost half the time as before. Indeed, the utilization at the L2 atomic input path (*lts__d_atomic_input_cycles_active.max.pct_of_peak_sustained_elapsed*) increased from 43% to 81%. As a result, we get almost one less eligible warp per scheduler. And more generally, streaming multiprocessors are now busy only 49% and memory pipelines only 34% of the time. Even though we made great improvements from before, our kernel now calls for further modifications.
+
+// Store heights in shared memory
+// Combine the kernels again
+//  Try some form of privatization
+
+
 // Outlook, Intro, Review
 // Adapt the code
 // Beautify

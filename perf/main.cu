@@ -72,10 +72,10 @@ void launch_marching_squares() {
   };
 
   auto func_base = [&]() {
-    dim3 block_dim_1(16, 16, 1);
-    dim3 grid_dim_1(compute::ceil_div(SIZE.width - 1, block_dim_1.x), compute::ceil_div(SIZE.height - 1, block_dim_1.y),
-                    compute::ceil_div(THRESHOLD_COUNT, block_dim_1.z * COARSE_FACTOR));
-    perf::marching_squares_part_1<<<grid_dim_1, block_dim_1>>>(
+    dim3 block_dim_1(16, 16);
+    dim3 grid_dim_1(compute::ceil_div(SIZE.width - 1, block_dim_1.x),
+                    compute::ceil_div(SIZE.height - 1, block_dim_1.y));
+    perf::marching_squares_part_1<<<grid_dim_1, block_dim_1, THRESHOLD_COUNT>>>(
         c_heights, count_buffer.data, max_contours_per_threshold * THRESHOLD_COUNT, tmp_coordinates_buffer.data,
         thresholds_buffer.data, tmp_thresholds_buffer.data, THRESHOLD_COUNT);
 
@@ -88,9 +88,27 @@ void launch_marching_squares() {
                                                                tmp_coordinates_buffer.data, tmp_thresholds_buffer.data);
   };
 
+  auto setup_combined = [&]() {
+    cudaMemset(count_buffer.data, 0, count_buffer.bytes());
+    cudaMemset(contour_buffer.data, 0, contour_buffer.bytes());
+  };
+
+  auto func_combined = [&]() {
+    dim3 block_dim_1(16, 16);
+    dim3 grid_dim_1(compute::ceil_div(SIZE.width - 1, block_dim_1.x),
+                    compute::ceil_div(SIZE.height - 1, block_dim_1.y));
+    perf::marching_squares<<<grid_dim_1, block_dim_1, THRESHOLD_COUNT>>>(
+        c_heights, count_buffer.data, max_contours_per_threshold * THRESHOLD_COUNT, thresholds_buffer.data,
+        contour_buffer.data, THRESHOLD_COUNT);
+  };
+
   setup();
   func_base();
   // plot(height_grid_buffer.toVector(), SIZE, contour_buffer.toVector(), "base");
+
+  setup_combined();
+  func_combined();
+  // plot(height_grid_buffer.toVector(), SIZE, contour_buffer.toVector(), "combined");
 }
 
 } // namespace perf

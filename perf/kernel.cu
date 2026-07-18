@@ -89,19 +89,25 @@ __global__ void marching_squares_part_1(compute::CGrid heights, int* __restrict_
                                         float* __restrict__ tmp_thresholds, int threshold_count) {
   int col = blockIdx.x * blockDim.x + threadIdx.x;
   int row = blockIdx.y * blockDim.y + threadIdx.y;
-  int layer = blockIdx.z * COARSE_FACTOR; // blockDim.z == 1
 
   bool active = col < heights.size.width - 1 && row < heights.size.height - 1;
+
+  float top_left, top_right, bottom_right, bottom_left;
+
+  if (active) {
+    top_left = heights[row][col];
+    top_right = heights[row][col + 1];
+    bottom_right = heights[row + 1][col + 1];
+    bottom_left = heights[row + 1][col];
+  }
 
   int thread_id = threadIdx.y * blockDim.x + threadIdx.x;
   int stride = blockDim.x * blockDim.y;
 
-  int compute_layers = min(COARSE_FACTOR, threshold_count - layer);
+  extern __shared__ float thresholds_s[];
 
-  __shared__ float thresholds_s[COARSE_FACTOR];
-
-  for (int i = thread_id; i < compute_layers; i += stride) {
-    thresholds_s[i] = thresholds[layer + i];
+  for (int i = thread_id; i < threshold_count; i += stride) {
+    thresholds_s[i] = thresholds[i];
   }
 
   __syncthreads();
@@ -110,16 +116,11 @@ __global__ void marching_squares_part_1(compute::CGrid heights, int* __restrict_
     return;
   }
 
-  float top_left = heights[row][col];
-  float top_right = heights[row][col + 1];
-  float bottom_right = heights[row + 1][col + 1];
-  float bottom_left = heights[row + 1][col];
-
   float min = minimum(top_left, top_right, bottom_right, bottom_left);
   float max = maximum(top_left, top_right, bottom_right, bottom_left);
 
-  int lower = lower_bound(min, thresholds_s, compute_layers);
-  int upper = lower_bound(max, thresholds_s, compute_layers);
+  int lower = lower_bound(min, thresholds_s, threshold_count);
+  int upper = lower_bound(max, thresholds_s, threshold_count);
 
   for (int i = lower; i < upper; ++i) {
     float threshold = thresholds_s[i];
@@ -256,6 +257,151 @@ __global__ void marching_squares_part_2(compute::CGrid heights, float4* __restri
 
   default:
     break;
+  }
+}
+
+__global__ void marching_squares(compute::CGrid heights, int* __restrict__ count, int max_count,
+                                 float const* __restrict__ thresholds, float4* __restrict__ contours,
+                                 int threshold_count) {
+  int col = blockIdx.x * blockDim.x + threadIdx.x;
+  int row = blockIdx.y * blockDim.y + threadIdx.y;
+
+  bool active = col < heights.size.width - 1 && row < heights.size.height - 1;
+
+  float top_left, top_right, bottom_right, bottom_left;
+
+  if (active) {
+    top_left = heights[row][col];
+    top_right = heights[row][col + 1];
+    bottom_right = heights[row + 1][col + 1];
+    bottom_left = heights[row + 1][col];
+  }
+
+  int thread_id = threadIdx.y * blockDim.x + threadIdx.x;
+  int stride = blockDim.x * blockDim.y;
+
+  extern __shared__ float thresholds_s[];
+
+  for (int i = thread_id; i < threshold_count; i += stride) {
+    thresholds_s[i] = thresholds[i];
+  }
+
+  __syncthreads();
+
+  if (!active) {
+    return;
+  }
+
+  float min = minimum(top_left, top_right, bottom_right, bottom_left);
+  float max = maximum(top_left, top_right, bottom_right, bottom_left);
+
+  int lower = lower_bound(min, thresholds_s, threshold_count);
+  int upper = lower_bound(max, thresholds_s, threshold_count);
+
+  for (int i = lower; i < upper; ++i) {
+    float threshold = thresholds_s[i];
+
+    int type = compute_type(top_left, top_right, bottom_right, bottom_left, threshold);
+    int local_count = count_for_type(type);
+
+    if (local_count == 0) {
+      continue;
+    }
+
+    cuda::atomic_ref<int, cuda::thread_scope_device> segment_count_ref(*count);
+    int global_count = segment_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
+
+    // TODO this should be refined
+    if (local_count + global_count > max_count) {
+      continue;
+    }
+
+    bool inside = compute_inside(top_left, top_right, bottom_right, bottom_left, threshold);
+
+    switch (type) {
+    case 0:
+    case 15:
+      break;
+
+    case 1:
+    case 14:
+      contours[global_count] =
+          float4((float)col, row + linear_interpolation_factor(top_left, bottom_left, threshold),
+                 col + linear_interpolation_factor(bottom_left, bottom_right, threshold), (float)(row + 1));
+      break;
+
+    case 2:
+    case 13:
+      contours[global_count] =
+          float4(col + linear_interpolation_factor(bottom_left, bottom_right, threshold), (float)(row + 1),
+                 (float)(col + 1), row + linear_interpolation_factor(top_right, bottom_right, threshold));
+      break;
+
+    case 3:
+    case 12:
+      contours[global_count] =
+          float4((float)col, row + linear_interpolation_factor(top_left, bottom_left, threshold), (float)(col + 1),
+                 row + linear_interpolation_factor(top_right, bottom_right, threshold));
+      break;
+
+    case 4:
+    case 11:
+      contours[global_count] =
+          float4(col + linear_interpolation_factor(top_left, top_right, threshold), (float)row, (float)(col + 1),
+                 row + linear_interpolation_factor(top_right, bottom_right, threshold));
+      break;
+
+    case 5:
+      if (inside) {
+        contours[global_count] = float4((float)col, row + linear_interpolation_factor(top_left, bottom_left, threshold),
+                                        col + linear_interpolation_factor(top_left, top_right, threshold), (float)row);
+        contours[global_count + 1] =
+            float4(col + linear_interpolation_factor(bottom_left, bottom_right, threshold), (float)(row + 1),
+                   (float)(col + 1), row + linear_interpolation_factor(top_right, bottom_right, threshold));
+      } else {
+        contours[global_count] =
+            float4((float)col, row + linear_interpolation_factor(top_left, bottom_left, threshold),
+                   col + linear_interpolation_factor(bottom_left, bottom_right, threshold), (float)(row + 1));
+        contours[global_count + 1] =
+            float4(col + linear_interpolation_factor(top_left, top_right, threshold), (float)row, (float)(col + 1),
+                   row + linear_interpolation_factor(top_right, bottom_right, threshold));
+      }
+      break;
+
+    case 6:
+    case 9:
+      contours[global_count] =
+          float4(col + linear_interpolation_factor(top_left, top_right, threshold), (float)row,
+                 col + linear_interpolation_factor(bottom_left, bottom_right, threshold), (float)(row + 1));
+      break;
+
+    case 7:
+    case 8:
+      contours[global_count] = float4((float)col, row + linear_interpolation_factor(top_left, bottom_left, threshold),
+                                      col + linear_interpolation_factor(top_left, top_right, threshold), (float)row);
+      break;
+
+    case 10:
+      if (inside) {
+        contours[global_count] =
+            float4(col + linear_interpolation_factor(top_left, top_right, threshold), (float)row, (float)(col + 1),
+                   row + linear_interpolation_factor(top_right, bottom_right, threshold));
+        contours[global_count + 1] =
+            float4((float)col, row + linear_interpolation_factor(top_left, bottom_left, threshold),
+                   col + linear_interpolation_factor(bottom_left, bottom_right, threshold), (float)(row + 1));
+      } else {
+        contours[global_count] =
+            float4(col + linear_interpolation_factor(top_left, top_right, threshold), (float)row, (float)col,
+                   row + linear_interpolation_factor(top_left, bottom_left, threshold));
+        contours[global_count + 1] =
+            float4((float)(col + 1), row + linear_interpolation_factor(top_right, bottom_right, threshold),
+                   col + linear_interpolation_factor(bottom_left, bottom_right, threshold), (float)(row + 1));
+      }
+      break;
+
+    default:
+      break;
+    }
   }
 }
 } // namespace perf
