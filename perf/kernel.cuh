@@ -7,7 +7,7 @@
 
 namespace perf {
 
-constexpr int COARSE_FACTOR = 32;
+constexpr int COARSE_FACTOR = 128;
 
 __global__ void marching_squares_part_1(compute::CGrid heights, int* __restrict__ count, int max_count,
                                         int2* __restrict__ tmp_coordinates, float const* __restrict__ thresholds,

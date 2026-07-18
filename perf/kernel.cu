@@ -59,23 +59,39 @@ __device__ int count_for_type(int type) {
     return 1;
   }
 }
+__device__ int lower_bound(float target, float const* __restrict__ values, int count) {
+  int low = 0;
+  int high = count;
+
+  while (low < high) {
+    int middle = (high + low) / 2;
+
+    if (values[middle] < target) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+
+  return low;
+}
+
+__device__ float minimum(float top_left, float top_right, float bottom_right, float bottom_left) {
+  return fminf(fminf(top_left, top_right), fminf(bottom_right, bottom_left));
+}
+
+__device__ float maximum(float top_left, float top_right, float bottom_right, float bottom_left) {
+  return fmaxf(fmaxf(top_left, top_right), fmaxf(bottom_right, bottom_left));
+}
 
 __global__ void marching_squares_part_1(compute::CGrid heights, int* __restrict__ count, int max_count,
                                         int2* __restrict__ tmp_coordinates, float const* __restrict__ thresholds,
                                         float* __restrict__ tmp_thresholds, int threshold_count) {
   int col = blockIdx.x * blockDim.x + threadIdx.x;
   int row = blockIdx.y * blockDim.y + threadIdx.y;
-  int layer = (blockIdx.z * blockDim.z + threadIdx.z) * COARSE_FACTOR;
+  int layer = blockIdx.z * COARSE_FACTOR; // blockDim.z == 1
 
   bool active = col < heights.size.width - 1 && row < heights.size.height - 1;
-
-  float top_left, top_right, bottom_right, bottom_left;
-  if (active) {
-    top_left = heights[row][col];
-    top_right = heights[row][col + 1];
-    bottom_right = heights[row + 1][col + 1];
-    bottom_left = heights[row + 1][col];
-  }
 
   int thread_id = threadIdx.y * blockDim.x + threadIdx.x;
   int stride = blockDim.x * blockDim.y;
@@ -94,8 +110,18 @@ __global__ void marching_squares_part_1(compute::CGrid heights, int* __restrict_
     return;
   }
 
-#pragma unroll 16
-  for (int i = 0; i < compute_layers; ++i) {
+  float top_left = heights[row][col];
+  float top_right = heights[row][col + 1];
+  float bottom_right = heights[row + 1][col + 1];
+  float bottom_left = heights[row + 1][col];
+
+  float min = minimum(top_left, top_right, bottom_right, bottom_left);
+  float max = maximum(top_left, top_right, bottom_right, bottom_left);
+
+  int lower = lower_bound(min, thresholds_s, compute_layers);
+  int upper = lower_bound(max, thresholds_s, compute_layers);
+
+  for (int i = lower; i < upper; ++i) {
     float threshold = thresholds_s[i];
 
     int type = compute_type(top_left, top_right, bottom_right, bottom_left, threshold);
