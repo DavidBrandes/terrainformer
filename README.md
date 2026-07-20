@@ -762,11 +762,17 @@ if (col < grid_size.width - 1 && row < grid_size.height - 1) {
 
 Luckily we came back to this topic. The kernels runtime is now down at 6.63 ms, almost half of its baseline. As before we mostly attribute it to the by 61% decreased issued instructions, which are now at a value of 261,175,753. This decrease is also able to cover up quite a few things that turned worse now. We can observe warps stalling due pending memory requests. Possibly a result of an increased pressure on the atomic counter. We now get the same amount of requests in almost half the time as before. Indeed, the utilization at the L2 atomic input path (*lts__d_atomic_input_cycles_active.max.pct_of_peak_sustained_elapsed*) increased from 43% to 81%. As a result, we get almost one less eligible warp per scheduler. And more generally, streaming multiprocessors are now busy only 49% and memory pipelines only 34% of the time. Even though we made great improvements from before, our kernel now calls for further modifications.
 
+#### Revisiting shared memory loads of the height grid
+Le us take a look at another modification we tried previously and see if its position still holds. Most of the setup did not change that would affect the previous outcome for loading the height grid into shared memory at the first kernel's beginning. Only now, we have a barrier for loading the thresholds into shared memory that did not exist before. Previously, when one did not exist yet, the barrier we added degraded the kernel's performance a lot. Now that we have one anyways, we are interested if the situation differs.
+
+A new profiling run unfortunately shows no improvement. With the current block configuration of $16\times16$ threads, we observe a few µs added to the baseline's runtime. Switching the configuration to $32\times16$, we manage to get them basically equivalent. Even with the new setup, we still cannot make shared memory useful for the height grid. As expected, DRAM throughput is down in this version and we find fewer warps stalling due to memory dependencies. But the time saved here, is now spent at the barrier instead. It seems the kernel still cannot load all the block's data fast enough to profit from this modification. Also the added complexity for these shared memory loads, shows in an increase of 16% of issued instructions.
+ 
 // Store heights in shared memory
 // Combine the kernels again
 //  Try some form of privatization
+// Outlook
 
+// Intro, Review
 
-// Outlook, Intro, Review
 // Adapt the code
 // Beautify

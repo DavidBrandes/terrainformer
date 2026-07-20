@@ -104,11 +104,11 @@ void launch_marching_squares() {
 
   setup();
   func_base();
-  // plot(height_grid_buffer.toVector(), SIZE, contour_buffer.toVector(), "base");
+  plot(height_grid_buffer.toVector(), SIZE, contour_buffer.toVector(), "base");
 
   setup_combined();
   func_combined();
-  // plot(height_grid_buffer.toVector(), SIZE, contour_buffer.toVector(), "combined");
+  plot(height_grid_buffer.toVector(), SIZE, contour_buffer.toVector(), "combined");
 }
 
 } // namespace perf

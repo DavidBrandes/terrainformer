@@ -7,6 +7,9 @@
 
 namespace perf {
 
+constexpr int BLOCK_DIM_X = 32;
+constexpr int BLOCK_DIM_Y = 16;
+
 __global__ void marching_squares_part_1(compute::CGrid heights, int* __restrict__ count, int max_count,
                                         int2* __restrict__ tmp_coordinates, float const* __restrict__ thresholds,
                                         float* __restrict__ tmp_thresholds, int threshold_count);
