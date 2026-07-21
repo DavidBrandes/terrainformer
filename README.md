@@ -501,15 +501,16 @@ __global__ void marching_squares_phase_1(float const* heights, Size grid_size, i
         int type = compute_type(heights, grid_size, col, row, threshold);
         int local_count = count_for_type(type);
 
-        cuda::atomic_ref<int, cuda::thread_scope_device> contour_count_ref(*contour_count);
-        int offset = contour_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
-
         if (local_count > 0) {
+            cuda::atomic_ref<int, cuda::thread_scope_device> contour_count_ref(*contour_count);
+            int offset = contour_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
+
             coordinates[offset] = int2(col, row);
             subgrid_thresholds[offset] = threshold;
-        }
-        if (local_count > 1) {
-            coordinates[offset + 1] = int2(-1, -1);
+
+            if (local_count > 1) {
+                coordinates[offset + 1] = int2(-1, -1);
+            }
         }
     }
 }
@@ -727,7 +728,7 @@ for (int i = lower; i < upper; ++i) {
 }
 ```
 
-Both approaches give us a very noticeable further decrease in runtime with the binary search version being the more performant of both. As before, we attribute most of these gains the decreased operations the algorithm has to perform. We illustrate the runtime of each version together we the number of issued instructions in the below table. Since we expect each thread to mostly perform less than one loop iteration on average now, there is also no need for pragma to unroll them. Decreasing the operations of this kernel, it is now also no vo clearly longer compute bound. For the version using binary search to find the range, we observe a rather balanced compute throughput of 67% and a memory throughput of 52%.
+Both approaches give us a very noticeable further decrease in runtime with the binary search version being the more performant of both. As before, we attribute most of these gains the decreased operations the algorithm has to perform. We illustrate the runtime of each version together we the number of issued instructions in the below table. Since we expect each thread to mostly perform less than one loop iteration on average now, there is also no need for pragma to unroll them. Decreasing the operations of this kernel, it is now also very clearly no longer compute bound. For the version using binary search to find the range, we observe a rather balanced compute throughput of 67% and a memory throughput of 52%.
 
 | Variant                 | Full Loop     | Early Continue | Linear Pruning | Binary Pruning |
 | ----------------------- | ------------- | -------------- | -------------- | -------------- |
@@ -746,7 +747,7 @@ int stride = blockDim.x * blockDim.y;
 extern __shared__ float thresholds_s[];
 
 for (int i = thread_id; i < threshold_count; i += stride) {
-thresholds_s[i] = thresholds[i];
+    thresholds_s[i] = thresholds[i];
 }
 
 __syncthreads();
@@ -765,9 +766,34 @@ Luckily we came back to this topic. The kernels runtime is now down at 6.63 ms, 
 #### Revisiting shared memory loads of the height grid
 Le us take a look at another modification we tried previously and see if its position still holds. Most of the setup did not change that would affect the previous outcome for loading the height grid into shared memory at the first kernel's beginning. Only now, we have a barrier for loading the thresholds into shared memory that did not exist before. Previously, when one did not exist yet, the barrier we added degraded the kernel's performance a lot. Now that we have one anyways, we are interested if the situation differs.
 
-A new profiling run unfortunately shows no improvement. With the current block configuration of $16\times16$ threads, we observe a few µs added to the baseline's runtime. Switching the configuration to $32\times16$, we manage to get them basically equivalent. Even with the new setup, we still cannot make shared memory useful for the height grid. As expected, DRAM throughput is down in this version and we find fewer warps stalling due to memory dependencies. But the time saved here, is now spent at the barrier instead. It seems the kernel still cannot load all the block's data fast enough to profit from this modification. Also the added complexity for these shared memory loads, shows in an increase of 16% of issued instructions.
- 
-// Store heights in shared memory
+A new profiling run unfortunately shows no improvement. With the current block configuration of $16\times16$ threads, we observe a few µs added to the baseline's runtime. Switching the configuration to $32\times16$, we manage to get them basically equivalent. Even with the new setup, we still cannot make shared memory useful for the height grid. As expected, DRAM throughput is down in this version and we find fewer warps stalling due to memory dependencies. But the time saved here, is now spent at the barrier instead. It seems the kernel still cannot load all the block's data fast enough to profit from this modification. Also the added complexity for these shared memory loads shows in an increase of 16% of issued instructions.
+
+#### Merging the kernels again
+Instead of looking at shared memory, we can revisit a decision we made very early on in this profiling journey. Is the split of the algorithm into two distinct kernels, the first to compute the grid indices that produce an output segment and the second to then compute the respective contour segments, still necessary? Back then, the sparse output with only one threshold made this split a reasonable decision. Now, that each threads computes contours at 100 thresholds, the setup is quite different. With 4,753,797 output segments in total, approximately every seventh thread computes one of them. While this situation is still not very dense, it definitively is not as sparse as it was before.
+
+```C++
+for (int i = lower; i < upper; ++i) {
+    float threshold = thresholds_s[i];
+
+    int type = compute_type(heights, grid_size, col, row, threshold);
+    int local_count = count_for_type(type);
+
+    if (local_count > 0) {
+        cuda::atomic_ref<int, cuda::thread_scope_device> contour_count_ref(*contour_count);
+        int offset = contour_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
+        
+        // Directly compute and store one segment consisting of 
+        // (x1, y1), (x2, y2) or two such segments to contours
+    }
+}
+```
+
+And indeed, measuring both approaches with CUDA events, we get a runtime of 4.8 ms for the split and one of 3.7 ms for the combined kernel approach. The new setup completely changed the outcome with the combined approach outperforming the baseline by more than 1 ms. When profiling the kernels with Nsight Compute, we see the combined kernel outperforming even the first one of the split approach by 0.28 ms with a runtime of 6.35 ms. on top of that, we save lots of time by not needing to launch a second kernel or having to transfer the counter between GPU can CPU. Given the fact that the combined version has an increase in issued instructions by 39% compared to the the first in the split approach, this result is quite fascinating.
+
+As the reason for this surprising behavior we make out the way the baseline kernel utilized memory pipelines. With its low compute throughput, the kernel's warps were mostly becoming eligible in bursts because of their common memory requirements. Once they had collectively fetched the thresholds from global memory, compute was small enough to have the threads fetch their respective $2\times2$ subgrid's heights and store back the determined indices at similar times. We can confirm that unresolved memory dependencies were a major limiting factor by looking at the profiling output in Nsight Compute. By far the most common warp stall reason of the first kernel in the split implementation was waiting on data from memory to arrive (*Stall Long Scoreboard*).
+
+The combined kernel on the other hand manages to hide these memory latencies. Also here, warps stalling due to memory requirements is the most common reason. But we find their occurrence almost halved compared to the baseline. Even more important, the combined kernel now gets about 1.65 additional eligible warps per scheduler on average with the amount of active warps staying constant. This strengthens our theory of the first kernel in the split version becoming active in waves. By adding more work, we made the kernel performing better and managed to speed to up the whole algorithm considerably. With this new method, we now also see the kernel making more use of its hardware with streaming multiprocessors being busy 65% of the time.
+
 // Combine the kernels again
 //  Try some form of privatization
 // Outlook
