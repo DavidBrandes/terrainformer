@@ -472,7 +472,9 @@ if (local_count > 0) {
 }
 ```
 
-We could try to go further, aggregate the increments per warp or block, and only write to the counter once per each grouping. Instead of having each thread increment the global counter, only one per warp, respectively block, would be responsible to increment it with the collected aggregate. Each individual thread within this grouping would then able to determine its global index by looking at the previously obtained global index of their warp, respectively block, and their local index within it. However, these approaches do not give us much at this point in time. As we saw in the analysis of the marching squares algorithm, the case of having a grid vertex produce a contour segment is very rare. So rare that any form of synchronization actually degrades performance. We illustrate the runtime of the kernels in the mentioned variants in the below table.
+We could try to go further, aggregate the increments per warp or block, and only write to the counter once per each grouping. Instead of having each thread increment the global counter, only one per warp, respectively block, would be responsible to increment it with the collected aggregate. In the former approach, the individual increments can be shuffled via the collective groups API to a leading thread responsible for incrementing the global counter. In the latter, a block scoped atomic counter is incremented by each of the block's threads before one dedicated one writes it to the global counter. Each individual thread within this grouping is then able to determine its global index by looking at the just obtained index and their local index within it. 
+
+Under certain circumstances, nvcc would be able to perform the warp wide aggregation by itself. Our situation however, where each thread may increment by a value 0, 1 or 2, is too eclectic for the compiler to implement it. Regardless, these approaches do not give us much at this point in time. As we saw in the analysis of the marching squares algorithm, the case of having a grid vertex produce a contour segment is very rare. So rare that any form of synchronization actually degrades performance. We illustrate the runtime of the kernels in the mentioned variants in the below table.
 
 | **Method**  | Write from each thread | Write if > 0 | Write once per warp | Write once per block |
 | ----------- | ---------------------- | ------------ | ------------------- | -------------------- |
@@ -660,8 +662,9 @@ __syncthreads();
 
 To be fair, we should add that only about half of this 7 ms performance gain can be attributed to the use of shared memory itself. The other half came from hoisting the repeated `if (layer + c >= threshold_count)` check out of the loop into a single computation of `layer_count`. While it only became necessary in the shared memory version, this single change would also have helped the basic implementation.
 
-#### Further optimization attempts
-Let us now take a look at further optimizations without going into too much detail about them. While reasonable choices by themselves, they either did not prove themselves performant enough or are bound to become useless with a another tweak that we will take later on. The first of them is to hint the compiler to unroll the loop over the thresholds. When hinting the compiler to unroll in powers of 2 for the range 1 to 32, we observe a noticeable decrease in runtime down to 36.81 ms at an unroll factor of 16, after which it starts increasing again.
+#### Unrolling the loop over the thresholds
+Having a loop over the individual thresholds inside our kernel, we can hint the compiler to unroll it. An unrolled loop exposes more independent instructions to the scheduler, which it can then work with to exploit instruction level parallelism and better hide latencies. While the pragma to unroll a loop is only a hint to the compiler, it seems to have followed through with it in our case. When hinting to unroll in powers of 2 for the range 1 to 32, we can see actual performance differences which we show in the below table.
+
 
 ```C++
 int layer = (blockIdx.z * BLOCK_DIM_Z + threadIdx.z) * COARSE_FACTOR;
@@ -683,14 +686,76 @@ for (int i = 0; i < compute_layers; ++i) {
 }
 ```
 
-The next optimization is to load the thresholds at `float4` vectors. This adds the requirement of having them 16-byte aligned the coarse factor be a multiple of 4. While this brings memory throughput down to 15% from 33%, it only slightly improves the kernel's runtime. Coarsening the kernel made it very much compute bound, with a compute throughput of 83%. Adding in these vector loads, optimized a memory pipeline that is no longer a bottleneck. The actual speedup thereby seems to be mostly coming from a reduction in issued instructions by 3%, which closely correlates with the decrease in the kernel's runtime.
+We observe a noticeable decrease in runtime up to a factor of 16, after which the runtime increases again. At a factor of 32, we basically eliminate the loop entirely for all but the boundary blocks, given the chosen coarse factor of 32. At the most performant unroll factor of 16, we leave the loop at only two iterations. Interestingly, the compiler seems to have already unrolled the loop by a factor of two on its own, as explicitly setting it to 1, i.e. having no unrolling at all, shows a noticeable performance degradation.
 
-If we wanted the temporary output buffers, that store the grid indices and thresholds in between the first and second kernel launches, to be smaller we could compactify them both into a combined `uint2` array. Demanding the height grid's width and height to be each smaller than $2^16$, we can combine them both into a single `uint` and merge it with a casted threshold. This reduces the first kernel's runtime slightly by 3% and leaves the second one about the same. As before, however, the modification does not address our actual bottleneck.
+| Unroll Factor | None     | 1        | 2        | 4        | 8        | 16       | 32       |
+| ------------- | -------- | -------- | -------- | -------- | -------- | -------- | -------- |
+| **Runtime**   | 41.94 ms | 43.12 ms | 41.65 ms | 38.55 ms | 36.99 ms | 36.81 ms | 38.40 ms |
 
-Another common approach to optimize a filter type kernel as ours, is to apply block privatization. In the chapter about reducing the pressure on the atomic counter, we already quickly tried to aggregate the counts locally per block before writing them once to the global counter. Now that the kernel is coarsened along the thresholds and produce more output per block, we can give it another shot. Additionally to adding a block level atomic counter, we also buffer output data in shared memory until we let all threads collectively write it to global memory in a coalesced manner at the kernel's end. While in theory a block could produce way more output segments than shared memory could store, we can nevertheless get a feeling for this method by simply limiting the buffer size to fit for now. With our profiling grid, no block produces more than 140 output segments. An amount, we easily can accommodate in shared memory. This privatized implementation performs about 1.3 ms worse than its baseline. The output segments are simply still too sparsely distributed for the kernel to benefit from this modification.
+Looking at the profiler output, we have another interesting observation. Irrespective of the chosen unroll factor, the threads use the same amount of registers. The compiler seems to be pretty good at reusing them. However this also suggests the performance increase doesn't really come from an improved instruction level parallelism. We expect such a tight register reuse to introduce data hazards which directly would contradict an increased parallelism. Instead the performance gain appears to be coming from a reduced control overhead for the loop. We see issued instructions decreased by 15% and branch instructions decreased by 23% when comparing the kernel with unroll factor 16 against the base implementation with no compiler hint at all.
+
+#### Privatizing the output data
+A common approach to optimize a filter type kernel is to apply block privatization. In the chapter about reducing the pressure on the atomic counter, we already quickly tried to aggregate the counts locally per block before writing them once to the global counter. Back then, the rarity of actually containing an output segment prevented this method from being useful to. Now that we coarsen the kernel along the thresholds, we should get the coarse factor times more output segments. With out chosen factor of 32, each block is on average responsible for about 12 segments. This is still a pretty sparse distribution, but at least better than before.
+
+However, differently to before, where we had only one threshold per block, we now can no longer keep any potential output data in registers until their slot in global memory is determined. Each height grid vertex could in theory produce up to $2f_c$, where $f_c$ is the coarse factor, output segments. Even though we know that in practice, this number will almost always be way lower than this, we still have no guarantee for it. To not run out of registers and having to spill them to DRAM, we can instead buffer the output data in shared memory. As a neat benefit of this modification, we will collectively write the output in a coalesced manner at the kernel's end and do not scatter it in unconnected locations as we do in the previous version.
+
+```C++
+// Load heights and store thresholds into shared memory
+
+__shared__ int2 coordinates_s[BLOCK_DIM_Z][BUFFER_SIZE];
+__shared__ float subgrid_thresholds_s[BLOCK_DIM_Z][BUFFER_SIZE];
+__shared__ int block_count_s;
+__shared__ int global_offset_s;
+
+if (thread_id == 0) {
+    block_count_s = 0;
+}
+
+__syncthreads();
+
+#pragma unroll 16
+for (int i = 0; i < compute_layers; ++i) {
+    float threshold = thresholds_s[i];
+
+    int type = compute_type(heights, grid_size, col, row, threshold);
+    int local_count = count_for_type(type);
+
+    if (local_count > 0) {
+        cuda::atomic_ref<int, cuda::thread_scope_block> block_count_ref(block_count_s);
+        int block_offset = block_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
+
+        coordinates_s[block_offset] = int2(col, row);
+        subgrid_thresholds_s[block_offset] = threshold;
+
+        if (local_count > 0) {
+            coordinates_s[block_offset + 1] = int2(-1, -1);
+        }
+    }
+}
+
+__syncthreads();
+
+if (thread_id == 0 && block_count_s > 0) {
+    cuda::atomic_ref<int, cuda::thread_scope_device> global_count_ref(*count);
+    global_offset_s = global_count_ref.fetch_add(block_count_s, cuda::memory_order_relaxed);
+}
+
+__syncthreads();
+
+for (int i = thread_id; i < block_count_s; i += stride) {
+    coordinates[global_offset_s + i] = coordinates_s[i];
+    thresholds_s[global_offset_s + i] = subgrid_thresholds_s[i];
+}
+```
+
+While we now saved registers from being overused, we shifted the problem to shared memory. On our profiling GPU, shared memory is limited to 100 KiB per streaming multiprocessor. To get full occupancy with the possible 1536 threads, we cannot use more than 66.7 bytes per thread. With our coarse factor of 32, this is way too little to potentially store all the potentially required data. We can nevertheless get a feeling for this method by simply limiting the buffer size to fit for now. With our profiling grid, no block produces more than 140 output segments. An amount, we easily can accommodate in shared memory.
+
+Looking at the metrics, we can see the added benefits we expected confirmed. The utilization of the L2 atomic input path handling our global atomic (*lts__d_atomic_input_cycles_active.max.pct_of_peak_sustained_elapsed*) decreased from 15.1% to now only 0.4%. Warps stalled on long latency memory dependencies (*Stall Long Scoreboard*) for only 0.02 instead of 0.12 cycles per issued instruction. The average number of useful global store bytes per transferred 32 byte sector (*smsp__sass_average_data_bytes_per_sector_mem_global_op_st.ratio*) increased from 13.96 to 26.83 due to improved coalescing.
+
+Upon observing the kernel's runtime, we are however hit with a surprise. The privatized implementation performs about 1.3 ms worse than its baseline. The output segments are simply still too sparsely distributed for the kernel to benefit from this modification. With a utilization of only 15.1%, the L2 atomic input path was far from sustained saturation to begin with. And while long-scoreboard stalls decreased, they were only a minor issue. In comparison, the additional synchronization increased barrier stalls (*Stall Barrier*) by 0.57 cycles per issued instruction. Additionally, we now have an increase in issued instructions by 2%. We increased the overhead of our kernel to solve an issue that never had a big impact to start with. Even if we experimentally increase the coarse factor to the full 100 thresholds, we observe the same behavior, albeit now with a smaller remaining runtime difference.
 
 #### Pruning threshold iterations
-We need to look elsewhere to find a more meaningful improvement for our kernel. Knowing that it currently is compute bound, we can take a look at the algorithm itself.  Currently we compute the type of a $2\times2$ subgrid, the amount segments it produces and compare this amount against zero for every individual threshold. This is quite a bit of wasted computation if we consider that each subgrid is very likely to produce segments at most a few thresholds and even likelier at none at all. If we require the thresholds to come sorted in ascending order, we can perform a small trick that however greatly reduces computations. We can compute the minima and maxima of a subgrid and only check the thresholds that are lying within.
+We need to look elsewhere to find a more meaningful improvement for our kernel. Taking a step back to analyze it, we find it to be very much compute bound. It currently has a compute throughput of 83% and a memory throughput of only 33%. Coarsening the kernel and applying the subsequent modifications, it switched from being memory bound to being compute bound. Let us therefore take a look at the algorithm itself. Currently we compute the type of a $2\times2$ subgrid, the amount segments it produces and compare this amount against zero for every individual threshold. This is quite a bit of wasted computation if we consider that each subgrid is very likely to produce segments at most a few thresholds and even likelier at none at all. If we require the thresholds to come sorted in ascending order, we can perform a small trick that however greatly reduces computations. We can compute the minima and maxima of a subgrid and only check the thresholds that are lying within.
 
 ```C++
 float min = minimum(heights, grid_size, col, row);
@@ -794,8 +859,8 @@ As the reason for this surprising behavior we make out the way the baseline kern
 
 The combined kernel on the other hand manages to hide these memory latencies. Also here, warps stalling due to memory requirements is the most common reason. But we find their occurrence almost halved compared to the baseline. Even more important, the combined kernel now gets about 1.65 additional eligible warps per scheduler on average with the amount of active warps staying constant. This strengthens our theory of the first kernel in the split version becoming active in waves. By adding more work, we made the kernel performing better and managed to speed to up the whole algorithm considerably. With this new method, we now also see the kernel making more use of its hardware with streaming multiprocessors being busy 65% of the time.
 
-// Combine the kernels again
-//  Try some form of privatization
+// Split the atomic writes
+// Try some form of privatization
 // Outlook
 
 // Intro, Review
