@@ -859,7 +859,35 @@ As the reason for this surprising behavior we make out the way the baseline kern
 
 The combined kernel on the other hand manages to hide these memory latencies. Also here, warps stalling due to memory requirements is the most common reason. But we find their occurrence almost halved compared to the baseline. Even more important, the combined kernel now gets about 1.65 additional eligible warps per scheduler on average with the amount of active warps staying constant. This strengthens our theory of the first kernel in the split version becoming active in waves. By adding more work, we made the kernel performing better and managed to speed to up the whole algorithm considerably. With this new method, we now also see the kernel making more use of its hardware with streaming multiprocessors being busy 65% of the time.
 
-// Split the atomic writes
+#### Fixing the atomic increment
+Already way back in our profiling journey, we had looked at the atomic counter and how we could reduce its pressure. Then we found no benefit in aggregating the contour count, being either one or two, per warp or block and have it only written once per grouping. The same argument still holds with the present kernel. None of the conditions changed that would make the kernel more performant if we changed the current thread wise atomic increment to an aggregated one inside each of the loop iterations over the thresholds. An aggregated write across different thresholds, requiring us to revisit block privatization, will be a challenge that we will look at in the next chapter. But for now, there is already something we can do.
+
+The CUDA compiler is by itself able to aggregate atomic writes per warp if the correct requirements are met. With our increments being either one or two that is currently not the case. However if we look at the code from the right perspective, we can make it happen. For each thread that at least writes one contour segment, we can always have it increment the atomic counter by one and write its, potentially only first, output to the obtained slot. To write the second segment in the cases where it applies, the counter would then be incremented again by one and the output written to the respective global location.
+
+```C++
+for (int i = lower; i < upper; ++i) {
+    float threshold = thresholds_s[i];
+
+    int type = compute_type(heights, grid_size, col, row, threshold);
+    int local_count = count_for_type(type);
+
+    if (local_count > 0) {
+        cuda::atomic_ref<int, cuda::thread_scope_device> segment_count_ref(*count);
+        int global_count = segment_count_ref.fetch_add(1, cuda::memory_order_relaxed);
+
+        // Compute and store the first contour segment
+
+        if (local_count > 1) {
+            global_count = segment_count_ref.fetch_add(1, cuda::memory_order_relaxed);
+
+            // Compute and store the second contour segment
+        }
+    }
+}
+```
+
+Having now two atomic writes per thread instead of one could potentially slow down the kernel. However remembering how rarely the two segment case actually occurs we deem that ok. On our profiling grid, which does not see this case at all, we measure a huge boost in performance by this tweak. The kernels runtime is down by more than one millisecond to now 5.19 ms. The warp wide aggregation really helped. We can confirm nvcc performed this optimization by looking at the L2 atomic input path, that handles the atomic. Its utilization (*lts__d_atomic_input_cycles_active.max.pct_of_peak_sustained_elapsed*) decreased 85% to now only 18%. We also basically no longer see any warps stalling due to global memory requirements (*Stall Long Scoreboard*) and consequently get 1.25 more eligible warp available per scheduler on average.
+
 // Try some form of privatization
 // Outlook
 

@@ -93,6 +93,97 @@ __device__ float maximum(float top_left, float top_right, float bottom_right, fl
   return fmaxf(fmaxf(top_left, top_right), fmaxf(bottom_right, bottom_left));
 }
 
+__device__ void store_first_contour(int type, float top_left, float top_right, float bottom_right, float bottom_left,
+                                    float threshold, float4* __restrict__ contours) {
+  int col = blockIdx.x * blockDim.x + threadIdx.x;
+  int row = blockIdx.y * blockDim.y + threadIdx.y;
+
+  bool inside = compute_inside(top_left, top_right, bottom_right, bottom_left, threshold);
+  float left_y = row + linear_interpolation_factor(top_left, bottom_left, threshold);
+  float bottom_x = col + linear_interpolation_factor(bottom_left, bottom_right, threshold);
+  float right_y = row + linear_interpolation_factor(top_right, bottom_right, threshold);
+  float top_x = col + linear_interpolation_factor(top_left, top_right, threshold);
+
+  switch (type) {
+  case 1:
+  case 14:
+    *contours = float4((float)col, left_y, bottom_x, (float)(row + 1));
+    break;
+
+  case 2:
+  case 13:
+    *contours = float4(bottom_x, (float)(row + 1), (float)(col + 1), right_y);
+    break;
+
+  case 3:
+  case 12:
+    *contours = float4((float)col, left_y, (float)(col + 1), right_y);
+    break;
+
+  case 4:
+  case 11:
+    *contours = float4(top_x, (float)row, (float)(col + 1), right_y);
+    break;
+
+  case 5:
+    if (inside) {
+      *contours = float4((float)col, left_y, top_x, (float)row);
+    } else {
+      *contours = float4((float)col, left_y, bottom_x, (float)(row + 1));
+    }
+    break;
+
+  case 6:
+  case 9:
+    *contours = float4(top_x, (float)row, bottom_x, (float)(row + 1));
+    break;
+
+  case 7:
+  case 8:
+    *contours = float4((float)col, left_y, top_x, (float)row);
+    break;
+
+  case 10:
+    if (inside) {
+      *contours = float4(top_x, (float)row, (float)(col + 1), right_y);
+    } else {
+      *contours = float4(top_x, (float)row, (float)col, left_y);
+    }
+    break;
+
+  default:
+    break;
+  }
+}
+
+__device__ void store_second_contour(int type, float top_left, float top_right, float bottom_right, float bottom_left,
+                                     float threshold, float4* __restrict__ contours) {
+  int col = blockIdx.x * blockDim.x + threadIdx.x;
+  int row = blockIdx.y * blockDim.y + threadIdx.y;
+
+  bool inside = compute_inside(top_left, top_right, bottom_right, bottom_left, threshold);
+  float left_y = row + linear_interpolation_factor(top_left, bottom_left, threshold);
+  float bottom_x = col + linear_interpolation_factor(bottom_left, bottom_right, threshold);
+  float right_y = row + linear_interpolation_factor(top_right, bottom_right, threshold);
+  float top_x = col + linear_interpolation_factor(top_left, top_right, threshold);
+
+  if (type == 5) {
+    if (inside) {
+      *contours = float4(bottom_x, (float)(row + 1), (float)(col + 1), right_y);
+    } else {
+      *contours = float4(top_x, (float)row, (float)(col + 1), right_y);
+    }
+  }
+
+  if (type == 10) {
+    if (inside) {
+      *contours = float4((float)col, left_y, bottom_x, (float)(row + 1));
+    } else {
+      *contours = float4((float)(col + 1), right_y, bottom_x, (float)(row + 1));
+    }
+  }
+}
+
 __global__ void marching_squares(compute::CGrid heights, int* __restrict__ count, int max_count,
                                  float const* __restrict__ thresholds, float4* __restrict__ contours,
                                  int threshold_count) {
@@ -135,88 +226,31 @@ __global__ void marching_squares(compute::CGrid heights, int* __restrict__ count
     float threshold = thresholds_s[i];
 
     int type = compute_type(top_left, top_right, bottom_right, bottom_left, threshold);
-    int local_count = count_for_type(type);
 
-    if (local_count == 0) {
+    if (type == 0 || type == 15) {
       continue;
     }
 
     cuda::atomic_ref<int, cuda::thread_scope_device> segment_count_ref(*count);
-    int global_count = segment_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
+    int global_count = segment_count_ref.fetch_add(1, cuda::memory_order_relaxed);
 
-    // TODO this should be refined
-    if (local_count + global_count > max_count) {
+    if (global_count >= max_count) {
       continue;
     }
 
-    bool inside = compute_inside(top_left, top_right, bottom_right, bottom_left, threshold);
-    float left_y = row + linear_interpolation_factor(top_left, bottom_left, threshold);
-    float bottom_x = col + linear_interpolation_factor(bottom_left, bottom_right, threshold);
-    float right_y = row + linear_interpolation_factor(top_right, bottom_right, threshold);
-    float top_x = col + linear_interpolation_factor(top_left, top_right, threshold);
+    store_first_contour(type, top_left, top_right, bottom_right, bottom_left, threshold, contours + global_count);
 
-    switch (type) {
-    case 0:
-    case 15:
-      break;
-
-    case 1:
-    case 14:
-      contours[global_count] = float4((float)col, left_y, bottom_x, (float)(row + 1));
-      break;
-
-    case 2:
-    case 13:
-      contours[global_count] = float4(bottom_x, (float)(row + 1), (float)(col + 1), right_y);
-      break;
-
-    case 3:
-    case 12:
-      contours[global_count] = float4((float)col, left_y, (float)(col + 1), right_y);
-      break;
-
-    case 4:
-    case 11:
-      contours[global_count] = float4(top_x, (float)row, (float)(col + 1), right_y);
-      break;
-
-    case 5:
-      if (inside) {
-        contours[global_count] = float4((float)col, left_y, top_x, (float)row);
-
-        contours[global_count + 1] = float4(bottom_x, (float)(row + 1), (float)(col + 1), right_y);
-      } else {
-        contours[global_count] = float4((float)col, left_y, bottom_x, (float)(row + 1));
-
-        contours[global_count + 1] = float4(top_x, (float)row, (float)(col + 1), right_y);
-      }
-      break;
-
-    case 6:
-    case 9:
-      contours[global_count] = float4(top_x, (float)row, bottom_x, (float)(row + 1));
-      break;
-
-    case 7:
-    case 8:
-      contours[global_count] = float4((float)col, left_y, top_x, (float)row);
-      break;
-
-    case 10:
-      if (inside) {
-        contours[global_count] = float4(top_x, (float)row, (float)(col + 1), right_y);
-
-        contours[global_count + 1] = float4((float)col, left_y, bottom_x, (float)(row + 1));
-      } else {
-        contours[global_count] = float4(top_x, (float)row, (float)col, left_y);
-
-        contours[global_count + 1] = float4((float)(col + 1), right_y, bottom_x, (float)(row + 1));
-      }
-      break;
-
-    default:
-      break;
+    if (type != 5 && type != 10) {
+      continue;
     }
+
+    global_count = segment_count_ref.fetch_add(1, cuda::memory_order_relaxed);
+
+    if (global_count >= max_count) {
+      continue;
+    }
+
+    store_second_contour(type, top_left, top_right, bottom_right, bottom_left, threshold, contours + global_count);
   }
 }
 } // namespace perf
