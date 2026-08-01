@@ -75,9 +75,40 @@ void launch_marching_squares() {
         contour_buffer.data, THRESHOLD_COUNT);
   };
 
+  GpuBuffer<int2> tmp_coordinates_buffer{max_contours_per_threshold * THRESHOLD_COUNT};
+  GpuBuffer<float> tmp_thresholds_buffer{max_contours_per_threshold * THRESHOLD_COUNT};
+
+  auto setup_split = [&]() {
+    cudaMemset(count_buffer.data, 0, count_buffer.bytes());
+    cudaMemset(contour_buffer.data, 0, contour_buffer.bytes());
+    cudaMemset(tmp_coordinates_buffer.data, 0, tmp_coordinates_buffer.bytes());
+    cudaMemset(tmp_thresholds_buffer.data, 0, tmp_thresholds_buffer.bytes());
+  };
+
+  auto func_split = [&]() {
+    dim3 block_dim_1(16, 16);
+    dim3 grid_dim_1(compute::ceil_div(SIZE.width - 1, block_dim_1.x),
+                    compute::ceil_div(SIZE.height - 1, block_dim_1.y));
+    perf::marching_squares_part_1<<<grid_dim_1, block_dim_1, THRESHOLD_COUNT>>>(
+        c_heights, count_buffer.data, max_contours_per_threshold * THRESHOLD_COUNT, tmp_coordinates_buffer.data,
+        thresholds_buffer.data, tmp_thresholds_buffer.data, THRESHOLD_COUNT);
+
+    int count;
+    cudaMemcpy(&count, count_buffer.data, sizeof(int), cudaMemcpyDeviceToHost);
+
+    dim3 block_dim_2(256);
+    dim3 grid_dim_2(compute::ceil_div(count, block_dim_2.x));
+    perf::marching_squares_part_2<<<grid_dim_2, block_dim_2>>>(c_heights, contour_buffer.data, count,
+                                                               tmp_coordinates_buffer.data, tmp_thresholds_buffer.data);
+  };
+
   setup();
   func();
-  plot(height_grid_buffer.toVector(), SIZE, contour_buffer.toVector(), "base");
+  // plot(height_grid_buffer.toVector(), SIZE, contour_buffer.toVector(), "base");
+
+  setup_split();
+  func_split();
+  // plot(height_grid_buffer.toVector(), SIZE, contour_buffer.toVector(), "split");
 }
 
 } // namespace perf
