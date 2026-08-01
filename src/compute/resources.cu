@@ -1,16 +1,23 @@
 #include "compute/resources.h"
 
 #include <cuda_gl_interop.h>
+#include <driver_types.h>
 #include <glad/gl.h>
 
 #include "compute/mapped_resources.cuh"
 #include "compute/utils.cuh"
+#include "types.cuh"
 
 namespace compute {
 
 GpuResources::GpuResources(cudaGraphicsResource** resources, std::shared_ptr<Scene> scene) : _scene(scene) {
   _resources[0] = resources[0];
   _resources[1] = resources[1];
+
+  std::vector<float> thresholds = scene->contour.thresholds();
+  _thresholdCount = thresholds.size();
+  CUDA_CHECK(cudaMalloc(&_thresholds, thresholds.size() * sizeof(float)));
+  CUDA_CHECK(cudaMemcpy(_thresholds, thresholds.data(), thresholds.size() * sizeof(float), cudaMemcpyHostToDevice));
 
   CUDA_CHECK(cudaMalloc(&_contourSegmentCount, sizeof(int)));
 }

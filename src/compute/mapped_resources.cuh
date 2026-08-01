@@ -19,8 +19,10 @@ public:
   MappedGpuResources(MappedGpuResources&&) = delete;
   MappedGpuResources& operator=(MappedGpuResources&&) = delete;
 
-  ConstrainedGrid heights() const;
+  ConstrainedGrid constrainedHeights() const;
+  CGrid heights() const;
   Segments contours() const;
+  Thresholds thresholds() const;
 
 private:
   friend GpuResources;
@@ -29,7 +31,7 @@ private:
   std::shared_ptr<GpuResources> _parent;
 
   float* _heights;
-  Segment* _contourSegments;
+  float4* _contourSegments;
 };
 
 } // namespace compute

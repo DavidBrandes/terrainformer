@@ -6,8 +6,6 @@
 #include "utils/geometry.h"
 #include "utils/math.h"
 
-#include <vector>
-
 class SceneController {
 public:
   SceneController(Config const& config);
@@ -26,5 +24,4 @@ private:
   float _radiusRange;
   float _heightBrushIntensity;
   SceneConfig _initialSceneConfig;
-  std::vector<float> _thresholds; // TODO define in const memory
 };

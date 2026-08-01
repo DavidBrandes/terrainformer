@@ -27,7 +27,8 @@ int compute_max_segments(Config const& config, HeightGrid const& height_grid) {
 }
 } // namespace
 
-ContourLayer::ContourLayer(Config const& config, HeightGrid const& height_grid) {
+ContourLayer::ContourLayer(Config const& config, HeightGrid const& height_grid)
+    : _layers(config.scene.contourCount), _layerRange(height_grid.HEIGHT_RANGE) {
   glGenVertexArrays(1, &_vao);
   glGenBuffers(1, &_vbo);
 
@@ -55,3 +56,5 @@ ContourLayer::~ContourLayer() {
 }
 
 void ContourLayer::update(int count) { _count = std::min(count, _maxCount); }
+
+std::vector<float> ContourLayer::thresholds() const { return linspace(_layerRange, _layers, Bounds::EXCLUDE); }

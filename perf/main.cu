@@ -48,31 +48,32 @@ void launch_smoothstep() {
 void launch_marching_squares() {
   HeightGrid height_grid = make_height_grid(GRID_CONFIG);
   GpuBuffer<float> height_grid_buffer = make_gpu_buffer(height_grid);
-  compute::CGrid c_heights{.values = height_grid_buffer.data, .size = SIZE};
+  compute::CGrid heights{.values = height_grid_buffer.data, .size = SIZE};
 
   int possible_contours_per_threshold = (height_grid.size.width - 1) * (height_grid.size.height - 1) * 2;
   int max_contours_per_threshold = static_cast<int>(possible_contours_per_threshold * MAX_COUNT_FRACTION);
+  int max_contours = max_contours_per_threshold * THRESHOLD_COUNT;
 
-  GpuBuffer<float4> contour_buffer{max_contours_per_threshold * THRESHOLD_COUNT};
-
+  GpuBuffer<float4> contour_buffer{max_contours};
   GpuBuffer<int> count_buffer{1};
-  cudaMemset(count_buffer.data, 0, count_buffer.bytes());
 
-  std::vector<float> thresholds = linspace(THRESHOLD_RANGE, THRESHOLD_COUNT, Bounds::INCLUDE);
-  GpuBuffer<float> thresholds_buffer = GpuBuffer<float>::fromVector(thresholds);
+  compute::Segments contours{.values = contour_buffer.data, .count = count_buffer.data, .maxCount = max_contours};
+
+  std::vector<float> thresholds_h = linspace(THRESHOLD_RANGE, THRESHOLD_COUNT, Bounds::INCLUDE);
+  GpuBuffer<float> thresholds_buffer = GpuBuffer<float>::fromVector(thresholds_h);
+
+  compute::Thresholds thresholds{.values = thresholds_buffer.data, .count = THRESHOLD_COUNT};
 
   auto setup = [&]() {
-    cudaMemset(count_buffer.data, 0, count_buffer.bytes());
-    cudaMemset(contour_buffer.data, 0, contour_buffer.bytes());
+    cudaMemset(contours.count, 0, count_buffer.bytes());
+    cudaMemset(contours.values, 0, contour_buffer.bytes());
   };
 
   auto func = [&]() {
     dim3 block_dim_1(16, 16);
     dim3 grid_dim_1(compute::ceil_div(SIZE.width - 1, block_dim_1.x),
                     compute::ceil_div(SIZE.height - 1, block_dim_1.y));
-    perf::marching_squares<<<grid_dim_1, block_dim_1, THRESHOLD_COUNT>>>(
-        c_heights, count_buffer.data, max_contours_per_threshold * THRESHOLD_COUNT, thresholds_buffer.data,
-        contour_buffer.data, THRESHOLD_COUNT);
+    compute::marching_squares<<<grid_dim_1, block_dim_1, THRESHOLD_COUNT>>>(heights, contours, thresholds);
   };
 
   GpuBuffer<int2> tmp_coordinates_buffer{max_contours_per_threshold * THRESHOLD_COUNT};
@@ -90,7 +91,7 @@ void launch_marching_squares() {
     dim3 grid_dim_1(compute::ceil_div(SIZE.width - 1, block_dim_1.x),
                     compute::ceil_div(SIZE.height - 1, block_dim_1.y));
     perf::marching_squares_part_1<<<grid_dim_1, block_dim_1, THRESHOLD_COUNT>>>(
-        c_heights, count_buffer.data, max_contours_per_threshold * THRESHOLD_COUNT, tmp_coordinates_buffer.data,
+        heights, count_buffer.data, max_contours_per_threshold * THRESHOLD_COUNT, tmp_coordinates_buffer.data,
         thresholds_buffer.data, tmp_thresholds_buffer.data, THRESHOLD_COUNT);
 
     int count;
@@ -98,16 +99,18 @@ void launch_marching_squares() {
 
     dim3 block_dim_2(256);
     dim3 grid_dim_2(compute::ceil_div(count, block_dim_2.x));
-    perf::marching_squares_part_2<<<grid_dim_2, block_dim_2>>>(c_heights, contour_buffer.data, count,
+    perf::marching_squares_part_2<<<grid_dim_2, block_dim_2>>>(heights, contour_buffer.data, count,
                                                                tmp_coordinates_buffer.data, tmp_thresholds_buffer.data);
   };
 
-  setup();
-  func();
+  benchmark(func, setup);
+
+  // setup();
+  // func();
   // plot(height_grid_buffer.toVector(), SIZE, contour_buffer.toVector(), "base");
 
-  setup_split();
-  func_split();
+  // setup_split();
+  // func_split();
   // plot(height_grid_buffer.toVector(), SIZE, contour_buffer.toVector(), "split");
 }
 

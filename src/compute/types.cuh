@@ -6,17 +6,17 @@
 
 namespace compute {
 
-struct Segment {
-  Point start;
-  Point end;
-};
-
 struct Segments {
-  Segment* segments;
-  int* count;
+  float4* __restrict__ values;
+  int* __restrict__ count;
   int maxCount;
 
-  __device__ Segment& operator[](int index) { return segments[index]; }
+  __device__ float4& operator[](int index) { return values[index]; }
+};
+
+struct Thresholds {
+  float const* __restrict__ values;
+  int count;
 };
 
 struct Grid {

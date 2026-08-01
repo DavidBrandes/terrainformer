@@ -41,7 +41,6 @@ SceneController::SceneController(Config const& config)
       std::min({static_cast<float>(_gridSize.width), static_cast<float>(_gridSize.height), _effectRadius.max});
   float max_radius = static_cast<float>(min_grid_dim - 1) / 2;
   _radiusRange = std::min(max_radius, _effectRadius.max) - _effectRadius.min;
-  _thresholds = linspace(HeightGrid::HEIGHT_RANGE, config.scene.contourCount, Bounds::EXCLUDE);
 }
 
 void SceneController::updateCropState(ApplicationState& state) const {
@@ -96,7 +95,7 @@ void SceneController::shift(std::shared_ptr<compute::GpuResources>& resources, A
   float intensity = state.mouse.button == MouseState::Button::LEFT ? _heightBrushIntensity : -_heightBrushIntensity;
   BrushDab brush_dab{.circle = effect_circle, .intensity = intensity};
 
-  compute::Result result = modify_height(resources->map(), brush_dab, _thresholds);
+  compute::Result result = modify_height(resources->map(), brush_dab);
 
   if (result.modified) {
     resources->scene()->contour.update(result.contourSegmentCount);
@@ -127,7 +126,7 @@ void SceneController::update(std::shared_ptr<compute::GpuResources> resources, A
 void SceneController::initialize(std::shared_ptr<compute::GpuResources> resources, ApplicationState& state) {
   state.scene.preserveAspectRatio = _initialSceneConfig.preserveAspectRatio;
 
-  compute::Result result = compute_contour(resources->map(), _thresholds);
+  compute::Result result = compute_contour(resources->map());
 
   if (result.modified) {
     resources->scene()->contour.update(result.contourSegmentCount);

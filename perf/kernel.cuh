@@ -13,8 +13,4 @@ __global__ void marching_squares_part_1(compute::CGrid heights, int* __restrict_
 __global__ void marching_squares_part_2(compute::CGrid heights, float4* __restrict__ contours, int count,
                                         int2 const* __restrict__ tmp_coordinates,
                                         float const* __restrict__ tmp_thresholds);
-
-__global__ void marching_squares(compute::CGrid heights, int* __restrict__ count, int max_count,
-                                 float const* __restrict__ thresholds, float4* __restrict__ contours,
-                                 int threshold_count);
 } // namespace perf

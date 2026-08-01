@@ -32,6 +32,8 @@ private:
   std::shared_ptr<Scene> _scene;
   cudaGraphicsResource* _resources[2]; // [0] = contour VBO, [1] = map heights VBO
   int* _contourSegmentCount;
+  float* _thresholds;
+  int _thresholdCount;
 };
 
 } // namespace compute

@@ -2,6 +2,8 @@
 
 namespace compute {
 
+namespace {
+
 __device__ float apply_brush_dab(float height, float distance, Range height_range, BrushDab brush_dab) {
   float factor = 1 - distance / brush_dab.circle.radius;
   height += factor * factor * (3 - 2 * factor) * brush_dab.intensity;
@@ -16,6 +18,8 @@ __device__ float compute_distance(Vertex position, BrushDab brush_dab) {
 }
 
 __device__ bool is_active(float distance, BrushDab brush_dab) { return distance < brush_dab.circle.radius; }
+
+} // namespace
 
 __global__ void smoothstep(ConstrainedGrid heights, Vertex offset, BrushDab brush_dab) {
   int col = (blockIdx.x * blockDim.x + threadIdx.x) * 4 + offset.col;

@@ -4,6 +4,8 @@
 
 #include <glad/gl.h>
 
+#include <vector>
+
 class ContourLayer {
 public:
   ContourLayer(Config const& config, HeightGrid const& height_grid);
@@ -23,9 +25,13 @@ public:
   int count() const { return _count; }
   int maxCount() const { return _maxCount; }
 
+  std::vector<float> thresholds() const;
+
 private:
   GLuint _vao;
   GLuint _vbo;
   int _count;
   int _maxCount;
+  int _layers;
+  Range _layerRange;
 };
