@@ -22,9 +22,15 @@ The application can be run with `make run` and configured via `config.toml`. Use
 
 
 ## CUDA Kernel Optimization
-This application utilizes two CUDA kernels: a rather simple smoothstep kernel that allows us to modify the terrain and a more complex marching squares kernel that is used to compute the corresponding contour lines. We profiled and optimized both, starting from a naive version and working towards a more efficient solution iteratively.
+The Terrainformer application utilizes two CUDA kernels: a rather simple smoothstep kernel that allows us to modify the terrain and a more complex marching squares kernel that computes the corresponding contour lines. Since both kernels are executed whenever the terrain or its contours are updated, their performance directly affects how the application responds.
 
-We tried to keep each optimization step as minimal and self-contained as possible. However, some steps required refactoring the code, which by itself slightly modified the kernel's behavior. Consequently, in such situations, a performance gain or decrease might not be fully explained by the optimization alone, but could also be influenced by the corresponding refactoring. We tried to minimize such effects throughout our journey. Whenever we are aware of such effects, we will explicitly point them out.
+We will profile and optimize both of them, starting from naive implementations and iteratively work towards more efficient solutions. The two kernels present rather different challenges. The smoothstep kernel performs regular, element-wise operations and will eventually be limited mainly by memory bandwidth. The marching squares kernel, on the other hand, produces sparse and variably sized output, requiring special handling.
+
+In each step, we will examine the underlying reasons behind the observed performance differences and support our explanations with metrics collected using Nsight Compute. Along the way, we will see simple code changes produce substantial speedups, seemingly suitable optimizations make kernels slower and additional computation unexpectedly improve performance.
+
+The process we present will not always show a linear progression. Especially for the marching squares kernel, some approaches will not provide the expected performance gains or will become redundant after a subsequent modification. We still include them in this journal to show the honest path we took. Beyond that, we find the insights they provide interesting regardless of their eventual performance benefit.
+
+We also try to keep each optimization step as minimal and self-contained as possible. Some steps, however, require refactoring the code, which may by itself slightly modify the kernel's behavior. In such situations, a performance increase or decrease might not be explained entirely by the optimization alone, but could also be influenced by the surrounding refactoring. We try to minimize these effects throughout our journey and explicitly point them out whenever we are aware of them.
 
 ### Profiling Hardware
 The profiling and optimization was performed on an NVIDIA RTX 2000 Ada Generation Laptop GPU. The table below lists key hardware properties.
@@ -227,7 +233,7 @@ When using this kernel during an actual application run, we can expect it to be 
 
 To verify this behavior, we benchmarked 100 identical runs of this kernel with and without flushing the cache in between the runs. With the existing setup, i.e. using a brush radius of half the grid's height, we observed only a very slight speedup of 1.06. This suggests the kernel's access pattern largely evicts its own cache lines before they can be reused by a subsequent run. Indeed, if we run the kernel with a smaller brush radius that comfortably fits all data into L2 ($r=1500$), we get a speedup of 1.43, meaning a reduction in runtime by about 30%.
 
-#### Conclusion
+#### Summary
 
 With this memory-bound kernel, the current implementation reached the limits of what we can do. In the previous section, we estimated our kernel to modify approximately $4\pi*10^6$ grid elements. Taking the stated bandwidth of 256 GB/s and the fact that for each element we need 8 bytes of data transferred (one float loaded and stored), the optimal kernel's runtime can consequently be computed as
 $$
@@ -267,10 +273,10 @@ __global__ void marching_squares(float const* heights, Size grid_size, int* cont
         // Produces a number between 0 and 15
         int type = compute_type(heights, grid_size, col, row, threshold);  
         // Either 0, 4, or 8
-        int local_count = count_for_type(type);
+        int segment_count = count_for_type(type);
 
         cuda::atomic_ref<int, cuda::thread_scope_device> contour_count_ref(*contour_count);
-        int offset = contour_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
+        int offset = contour_count_ref.fetch_add(segment_count, cuda::memory_order_relaxed);
 
         // Compute and store either no segment, 
         // one segment consisting of (x1, y1), (x2, y2) 
@@ -331,15 +337,15 @@ __global__ void marching_squares_phase_1(float const* heights, Size grid_size, i
     if (col < grid_size.width - 1 && row < grid_size.height - 1) {
         int type = compute_type(heights, grid_size, col, row, threshold);
         // Now either 0, 1 or 2
-        int local_count = count_for_type(type);  
+        int segment_count = count_for_type(type);  
 
         cuda::atomic_ref<int, cuda::thread_scope_device> contour_count_ref(*contour_count);
-        int offset = contour_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
+        int offset = contour_count_ref.fetch_add(segment_count, cuda::memory_order_relaxed);
 
-        if (local_count > 0) {
+        if (segment_count > 0) {
             coordinates[offset] = int2(col, row);
         }
-        if (local_count > 1) {
+        if (segment_count > 1) {
             // The second segment will be computed together 
             // with the first by the second kernel. 
             // Hence the index is marked off.
@@ -421,17 +427,17 @@ __global__ void marching_squares_phase_1(float const* heights, Size grid_size, i
 
     if (col < grid_size.width - 1 && row < grid_size.height - 1) {
         int type = compute_type(heights, grid_size, col, row, threshold);
-        int local_count = count_for_type(type);
+        int segment_count = count_for_type(type);
 
         cuda::atomic_ref<int, cuda::thread_scope_device> contour_count_ref(*contour_count);
-        int offset = contour_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
+        int offset = contour_count_ref.fetch_add(segment_count, cuda::memory_order_relaxed);
 
-        if (local_count > 0) {
+        if (segment_count > 0) {
             coordinates[offset] = int2(col, row);
             // The 4 subgrid values
             subgrid_heights[offset] = float4(...); 
         }
-        if (local_count > 1) {
+        if (segment_count > 1) {
             coordinates[offset + 1] = int2(-1, -1);
         }
     }
@@ -464,11 +470,11 @@ We need to find another way to optimize our kernels. Looking at the warp stall s
 All of these operations put a lot of pressure on the counter. After modifying the code to only increment the counter when a segment is actually produced, we find the above stall metric almost halved, now averaging only around 6 cycles. This is an optimization nvcc cannot perform itself, as it may not elide atomic operations. Consequently, the amount of *Eligible Warps Per Scheduler* is now increased by 73% to 1.53. Overall, reducing the contention on the atomic variable decreased the runtime of the first kernel from 1.81 ms to 1.06 ms.
 
 ```C++
-int local_count = count_for_type(type);
+int segment_count = count_for_type(type);
 
-if (local_count > 0) {
+if (segment_count > 0) {
     cuda::atomic_ref<int, cuda::thread_scope_device> contour_count_ref(*contour_count);
-    int offset = contour_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
+    int offset = contour_count_ref.fetch_add(segment_count, cuda::memory_order_relaxed);
 }
 ```
 
@@ -487,7 +493,7 @@ So far we computed our height grid's contours only at a single threshold. For ou
 | ------------ | -------------- | -------------- | -------------- | ------- | ------------- | ------------- | ------------- |
 | **Segments** | 662            | 7,540          | 69,385         | 134,516 | 76,476        | 10,044        | 86            |
 
-We also make two assumptions: we will only know the exact number of thresholds at runtime, meaning we cannot place them into constant memory, and do not care about the ordering in which the output segments are produced. The latter one opens the way for optimizations as it loosens restrictions on how data should be stored. However, it also takes away the option to differentiate between contours at different thresholds, e.g. if we wanted to color each one differently.
+We also make three assumptions: we will only know the exact number of thresholds at runtime, meaning we would need to define an upper bound if wanted to place them into constant memory, allow for unevenly spaced thresholds, and do not care about the ordering in which the output segments are produced. The latter one opens the way for optimizations as it loosens restrictions on how data should be stored. However, it also takes away the option to differentiate between contours at different thresholds, e.g. if we wanted to color each one differently.
 
 #### Enabling parallelism across multiple thresholds
 What currently blocks us from computing contours at multiple thresholds in parallel is that we do not know which grid indices correspond to which threshold. From the first kernel, we currently save only the indices at which the second kernel then computes the contour segments. If we were to compute multiple thresholds in parallel, the second kernel would not know which threshold to use. Without any modifications, this leaves us naively computing the segments sequentially, one threshold after another.
@@ -501,16 +507,16 @@ __global__ void marching_squares_phase_1(float const* heights, Size grid_size, i
 
     if (col < grid_size.width - 1 && row < grid_size.height - 1) {
         int type = compute_type(heights, grid_size, col, row, threshold);
-        int local_count = count_for_type(type);
+        int segment_count = count_for_type(type);
 
-        if (local_count > 0) {
+        if (segment_count > 0) {
             cuda::atomic_ref<int, cuda::thread_scope_device> contour_count_ref(*contour_count);
-            int offset = contour_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
+            int offset = contour_count_ref.fetch_add(segment_count, cuda::memory_order_relaxed);
 
             coordinates[offset] = int2(col, row);
             subgrid_thresholds[offset] = threshold;
 
-            if (local_count > 1) {
+            if (segment_count > 1) {
                 coordinates[offset + 1] = int2(-1, -1);
             }
         }
@@ -678,9 +684,9 @@ for (int i = 0; i < compute_layers; ++i) {
     float threshold = thresholds_s[threadIdx.z][i];
 
     int type = compute_type(heights, grid_size, col, row, threshold);
-    int local_count = count_for_type(type);
+    int segment_count = count_for_type(type);
 
-    if (local_count > 0) {
+    if (segment_count > 0) {
         // Continue..
     }
 }
@@ -718,16 +724,16 @@ for (int i = 0; i < compute_layers; ++i) {
     float threshold = thresholds_s[i];
 
     int type = compute_type(heights, grid_size, col, row, threshold);
-    int local_count = count_for_type(type);
+    int segment_count = count_for_type(type);
 
-    if (local_count > 0) {
+    if (segment_count > 0) {
         cuda::atomic_ref<int, cuda::thread_scope_block> block_count_ref(block_count_s);
-        int block_offset = block_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
+        int block_offset = block_count_ref.fetch_add(segment_count, cuda::memory_order_relaxed);
 
         coordinates_s[block_offset] = int2(col, row);
         subgrid_thresholds_s[block_offset] = threshold;
 
-        if (local_count > 0) {
+        if (segment_count > 0) {
             coordinates_s[block_offset + 1] = int2(-1, -1);
         }
     }
@@ -744,7 +750,7 @@ __syncthreads();
 
 for (int i = thread_id; i < block_count_s; i += stride) {
     coordinates[global_offset_s + i] = coordinates_s[i];
-    thresholds_s[global_offset_s + i] = subgrid_thresholds_s[i];
+    subgrid_thresholds[global_offset_s + i] = subgrid_thresholds_s[i];
 }
 ```
 
@@ -840,7 +846,44 @@ And indeed, it was worth it to look at this approach again. Using a block wide a
 
 Consequently, we basically see warps no longer stalling and waiting on global memory requirements with now only 0.21 cycles per issued instruction compared to 7.53 in the pruned version. This vast decrease also amortizes the slight increase by 1.41 cycles in warps stalling due to the additional synchronization that we needed to add in. Removing the bottleneck at the atomic then cascaded to adding 1.37 additional eligible warps per scheduler on averaged and helped to keep the streaming multiprocessors busy around 77% of the time. Having coalesced writes instead of the scattered ones benefited us as well of course.
 
-However, despite this triumph we should not forget that the current implementation is not generalizable. So far we profited from the fact that our profiling height grid allows us to limit the amount of shared memory we need to reserve per block. Continue...[TODO] But this is ok, we already have another optimization in mind. To compare it against a theoretically optimal privatized implementation we measure the latter also with CUDA events. With a privatized first kernel, followed by a device-to-host transfer of the counter and the second kernel computing the contours from the intermediate data, we get a runtime of 3.7 ms averaged across 100 runs. 
+#### Generalizing block privatization
+
+Despite this triumph. we should not forget that the current privatized implementation is not generalizable. So far we profited from the fact that our profiling height grid allows us to limit the amount of shared memory we need to reserve per block. Further, the output data we want to write comfortably fits inside shared memory. Theoretically, each thread could write 2 output segments for each threshold that the kernel visits. In the current approach, we write one `int2` for the grid indices and one `float` for the thresholds per output segment. Multiplying all this info together, each thread would in our case potentially need $2 * 100 * (4B + 8B)=2400B$. While this case is very exaggerated, we have no mechanism in place that would prevent it from happening in theory.
+
+On our profiling GPU, that supports 1536 threads and 100 KiB per streaming multiprocessor, that is far more than we can provide.The simplest way around this limitation, that we can think of, is to only provide a shared memory buffer that we can support. Each block would then first fill this buffer and once it is full, write the remaining output data directly to DRAM. Without limiting occupancy, we can provision $\frac{100KiB}{1536}\approx66.7B$ of shared memory per thread. Accounting for the thresholds which we already store in shared memory, plus any potential counters and flags, every thread could potentially write 5 output segments on average before the buffer becomes full. In most height grid instantiations, we expect this to be more than enough.
+
+```C++
+cuda::atomic_ref<int, cuda::thread_scope_block> block_ref(block_count_s);
+int block_offset = block_ref.fetch_add(segment_count, cuda::memory_order_relaxed);
+
+if (block_offset + segment_count <= CAPACITY) {
+    coordinates_s[block_offset] = int2(col, row);
+    subgrid_thresholds_s[block_offset] = threshold;
+
+    if (segment_count == 2) {
+        coordinates_s[block_offset + 1] = int2(-1, -1);
+    }
+
+} else {
+    if (segment_count == 2 && block_offset + 1 == CAPACITY) {
+        last_value_set_s = false;
+    }
+
+    cuda::atomic_ref<int, cuda::thread_scope_device> device_ref(*count);
+    int global_offset = device_ref.fetch_add(segment_count, cuda::memory_order_relaxed);
+
+    coordinates[global_offset] = int2(col, row);
+    subgrid_thresholds[global_offset] = threshold;
+
+    if (segment_count == 2) {
+        coordinates[global_offset + 1] = int2(-1, -1);
+    }
+}
+```
+
+Trying it out, we find no runtime difference to the previous version. This makes sense. Compared to it, we only added in a branch that was never taken on our profiling grid. For a solution that is performant on a wide range of height grids, we would need to profile ours on such height grids as well. We can imagine that different approaches might be performant as well. E.g. one where the shared buffer is repeatedly written to DRAM after every few threshold iterations. Or another one, in which each warp is given its own buffer, which it can flush to DRAM whenever it becomes full.
+
+Preempting the upcoming section, the actual approach we choose won't matter. We will find that with the next modification, the privatized approach will not benefit us any more. To ground this claim with actual measurements, we time the full two-kernel pipeline with CUDA events. Using the privatized first kernel, followed by a device-to-host transfer of the counter and the second kernel computing the contours from the intermediate data, we get a runtime of 3.7 ms averaged across 100 runs. 
 
 #### Merging the kernels again
 Instead of looking at shared memory, we can revisit a decision we made very early on in this profiling journey. Is the split of the algorithm into two distinct kernels, the first to compute the grid indices that produce an output segment and the second to then compute the respective contour segments, actually still necessary? Back then, the sparse output with only one threshold made this split a reasonable decision. Now, that each threads computes contours at 100 thresholds, the setup is quite different. In the previous section we already established, that now approximately every 7th thread will produce an output segment. While this situation is still not very dense, it definitively is not as sparse as it was before.
@@ -850,11 +893,11 @@ for (int i = lower; i < upper; ++i) {
     float threshold = thresholds_s[i];
 
     int type = compute_type(heights, grid_size, col, row, threshold);
-    int local_count = count_for_type(type);
+    int segment_count = count_for_type(type);
 
-    if (local_count > 0) {
+    if (segment_count > 0) {
         cuda::atomic_ref<int, cuda::thread_scope_device> contour_count_ref(*contour_count);
-        int offset = contour_count_ref.fetch_add(local_count, cuda::memory_order_relaxed);
+        int offset = contour_count_ref.fetch_add(segment_count, cuda::memory_order_relaxed);
         
         // Directly compute and store one segment consisting of 
         // (x1, y1), (x2, y2) or two such segments to contours
@@ -878,15 +921,15 @@ for (int i = lower; i < upper; ++i) {
     float threshold = thresholds_s[i];
 
     int type = compute_type(heights, grid_size, col, row, threshold);
-    int local_count = count_for_type(type);
+    int segment_count = count_for_type(type);
 
-    if (local_count > 0) {
+    if (segment_count > 0) {
         cuda::atomic_ref<int, cuda::thread_scope_device> segment_count_ref(*count);
         int global_count = segment_count_ref.fetch_add(1, cuda::memory_order_relaxed);
 
         // Compute and store the first contour segment
 
-        if (local_count > 1) {
+        if (segment_count > 1) {
             global_count = segment_count_ref.fetch_add(1, cuda::memory_order_relaxed);
 
             // Compute and store the second contour segment
@@ -895,18 +938,26 @@ for (int i = lower; i < upper; ++i) {
 }
 ```
 
- With this trick, we basically aggregate the atomic write to the global counter per warp. Already previously we noted that the global atomic is quite a bottleneck in our code. Back then, we found the utilization at its L2 input path at 85% and saw quite a few warps stalling due to global memory requirements. With this modification applied, we see the former metric decreased to 18%. Not as good as we saw it when trying out block privatization, but still quite some jump. Similarly to that case, we basically no longer see any warps stalling due to global memory requirements with the additional benefit, that we did not add in any new barriers. With this approach, we see 1.25 more eligible warp available per scheduler on average. That is almost as good of an increase as before. Compared to the baseline, the kernels runtime is down by more than one millisecond to now 5.19 ms. 
- 
- #### Adding in block privatization
- We might be tempted to go a step further and privatize the combined kernel as well. While the warp aggregated atomic writes already showed a huge improvement in the mentioned metrics, we could see if we can perform even better. Trying again an approach that limits shared memory to a fixed size, we however now do not get a performance increase. The utilization at the global atomics input path is again down to 3%, but the difference is not as severe as before. The warp aggregated atomic write already managed to dissolve the bottleneck at the global counter. And while we in a sense got the reduction in atomic writes for free, privatization only introduced additional barriers and instructions that hurt us now.
+With this trick, we basically aggregate the atomic write to the global counter per warp. Already previously we noted that the global atomic is quite a bottleneck in our code. Back then, we found the utilization at its L2 input path at 85% and saw quite a few warps stalling due to global memory requirements. With this modification applied, we see the former metric decreased to 18%. Not as good as we saw it when trying out block privatization, but still quite some jump. Similarly to that case, we basically no longer see any warps stalling due to global memory requirements with the additional benefit, that we did not add in any new barriers. With this approach, we see 1.25 more eligible warp available per scheduler on average. That is almost as good of an increase as before. Compared to the baseline, the kernels runtime is down by more than one millisecond to now 5.19 ms. 
 
- The number of cycles per issued instruction that warps now spend waiting at a barrier almost doubled from 1.58 to 3.03. Whereas the decrease in cycles spent waiting on global memory requirements is less pronounced with a jump from 0.46 down to 0.11. Additionally, the modifications we had to make on our code increased the number of issues instructions by 10%. These changes simply outweigh the benefit of the further reduced atomic pressure or coalesced writes, that got improved with the average number of useful global store bytes per transferred 32 byte sector being increased from 18 to 26.83. The overall runtime of this kernel variant sits at 5.68 ms.
+#### Trying block privatization again
+We might be tempted to go a step further and privatize the combined kernel as well. While the warp aggregated atomic writes already showed a huge improvement in the mentioned metrics, we could see if we can perform even better. Trying again an approach that limits shared memory to a fixed size, we however now do not get a performance increase. The utilization at the global atomics input path is again down to 3%, but the difference is not as severe as before. The warp aggregated atomic write already managed to dissolve the bottleneck at the global counter. And while we in a sense got the reduction in atomic writes for free, privatization only introduced additional barriers and instructions that hurt us now.
 
-// Try some form of privatization
-// Conclusion, Outlook
-// Average runtime across 100 iterations: 3146.61 µs
+The number of cycles per issued instruction that warps now spend waiting at a barrier almost doubled from 1.58 to 3.03. Whereas the decrease in cycles spent waiting on global memory requirements is less pronounced with a jump from 0.46 down to 0.11. Additionally, the modifications we had to make on our code increased the number of issues instructions by 10%. These changes simply outweigh the benefit of the further reduced atomic pressure or coalesced writes, that got improved with the average number of useful global store bytes per transferred 32 byte sector being increased from 18 to 26.83. The overall runtime of this kernel variant sits at 5.68 ms.
 
-// Intro, Review (we should not pass heights to the helper functions but show the value is loaded up front)
+#### Summary
+This last try concludes the optimization journey for our marching squares kernel. Interestingly, the kernel's final shape is not too far off from the initial version right at the beginning. The initial conditions forced us to split the kernel into two distinct phases that continued to benefit us even after we added it multiple contour threshold levels. Only after experimenting with different approaches, we then found a performant way that allowed us to fuse the two phases into a single kernel again. Notably, most assumptions that we expected to benefit this unstable filter and convolution like kernel, did not hold. Rather the small tweaks were, what helped us to ultimately arrive at a performant implementation. 
 
-// Adapt the code
-// Beautify
+While the initial version computed contours at a single threshold in 2.76 ms when measured with Nsight Compute, the final version computes all 100 thresholds in only 5.19 ms. The final version manages to compute contours at 100 thresholds in less than double the time it took the initial one to compute them at only one. We can also get more view of the final implementation's performance at actual runtime by measuring it with CUDA events. Averaged across 100 runs it takes the kernel 3.15 ms to finish its computations.
+
+To get a more realistic feeling for the kernel's general behavior, we would need to also profile it on different instantiations of the height grid. With the one we used, we never saw how two-segment cases or multiple output contours per $2\times2$ subgrid affect the kernel. Ultimately, the performance will depend vastly on the height grid that the kernel is used on. We picked the one we deemed most realistic and estimate the mentioned cases to occur so rarely, that it won't affect the conclusions we came to much. Still, a more general view would need to account for different scenarios as well.
+
+#### Outlook
+In the previous smoothstep kernel, we managed to get a good increase in performance by restricting the kernel to only run on the region affected by a user's mouse click. This is an optimization, we never considered for the marching squares kernel. Initially, we would need to run the kernel on the full height grid to obtain the contours for the whole of it. From there on, same as the smoothstep kernel only needs to consider the user's click region, the marching squares kernel would only need to consider the height grid's region that got it's height modified. The contours outside this region are guaranteed to remain unchanged.
+
+The difficulty to implement such an approach also for the marching squares kernel, lies in the dynamic output size of its output contours. Even if only one of the height grid's vertices changed, it could lead to a shift of the entire output array. We leave the experimentation with this idea for the future and now only give a very rough description. We expect such an approach to yield even further gains in performance.
+
+In such implementation, unlike the current one, we would need to fix the output order of computed contours or at least implement a stable intermediate representation that is ordered with respect to the grid's threads. Such an implementation would closer resemble a two phased stable filter. The region lying before the modified one stays fixed and the one lying after it is shifted to accommodate for the new layout requirements that the modified region introduces. Actual computation would then only need to happen on the modified region to output the updated contours of the height grid.
+
+// Review, (we should not pass heights to the helper functions but show the value is loaded up front)
+// Beautify, Intro, Separate readme from journal?

@@ -84,9 +84,9 @@ __device__ float maximum(float top_left, float top_right, float bottom_right, fl
   return fmaxf(fmaxf(top_left, top_right), fmaxf(bottom_right, bottom_left));
 }
 
-__global__ void marching_squares_part_1(compute::CGrid heights, int* __restrict__ count, int max_count,
-                                        int2* __restrict__ tmp_coordinates, float const* __restrict__ thresholds,
-                                        float* __restrict__ tmp_thresholds, int threshold_count) {
+__global__ void marching_squares_phase_1(compute::CGrid heights, int* __restrict__ count, int max_count,
+                                         int2* __restrict__ tmp_coordinates, float const* __restrict__ thresholds,
+                                         float* __restrict__ tmp_thresholds, int threshold_count) {
   int col = blockIdx.x * blockDim.x + threadIdx.x;
   int row = blockIdx.y * blockDim.y + threadIdx.y;
 
@@ -167,9 +167,9 @@ __global__ void marching_squares_part_1(compute::CGrid heights, int* __restrict_
   }
 }
 
-__global__ void marching_squares_part_2(compute::CGrid heights, float4* __restrict__ contours, int count,
-                                        int2 const* __restrict__ tmp_coordinates,
-                                        float const* __restrict__ tmp_thresholds) {
+__global__ void marching_squares_phase_2(compute::CGrid heights, float4* __restrict__ contours, int count,
+                                         int2 const* __restrict__ tmp_coordinates,
+                                         float const* __restrict__ tmp_thresholds) {
   int index = blockIdx.x * blockDim.x + threadIdx.x;
 
   if (index >= count) {
