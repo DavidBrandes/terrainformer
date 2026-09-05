@@ -1,5 +1,5 @@
 ## CUDA Kernel Optimization
-The Terrainformer application utilizes two CUDA kernels: a rather simple smoothstep kernel that allows us to modify the terrain and a more complex marching squares kernel that computes the corresponding contour lines. Since both kernels are executed whenever the terrain or its contours are updated, their performance directly affects how the application responds.
+The [Terrainformer](README.md) application utilizes two CUDA kernels: a rather simple [smoothstep kernel](#smoothstep-kernel) that allows us to modify the terrain and a more complex [marching squares kernel](#marching-squares-kernel) that computes the corresponding contour lines. Since both kernels are executed whenever the terrain or its contours are updated, their performance directly affects how the application responds.
 
 We will profile and optimize both of them, starting from naive implementations and iteratively work towards more efficient solutions. The two kernels present rather different challenges. The smoothstep kernel performs regular, element-wise operations and will eventually be limited mainly by memory bandwidth. The marching squares kernel, on the other hand, produces sparse and variably sized output, requiring special handling.
 
@@ -10,21 +10,21 @@ The process we present will not always show a linear progression. Especially for
 We also try to keep each optimization step as minimal and self-contained as possible. Some steps, however, require refactoring the code, which may by itself slightly modify the kernel's behavior. In such situations, a performance increase or decrease might not be explained entirely by the optimization alone, but could also be influenced by the surrounding refactoring. We try to minimize these effects throughout our journey and explicitly point them out whenever we are aware of them.
 
 ### Profiling Hardware
-The profiling and optimization was performed on an NVIDIA RTX 2000 Ada Generation Laptop GPU. The table below lists key hardware properties.
+The profiling and optimization were performed on an NVIDIA RTX 2000 Ada Generation Laptop GPU. The table below lists key hardware properties.
 
 | Specification                   | Value       |
 | ------------------------------- | ----------- |
 | Compute capability              | 8.9         |
 | Arithmetic throughput           | 12 TFLOPS   |
-| Peak memory bandwidth           | 238.4 GiB/s |
+| Peak memory bandwidth           | 256 GB/s    |
 | Streaming Multiprocessors (SMs) | 24          |
 | Cores per SM                    | 128         |
 | Warp size                       | 32          |
 | Max blocks per SM               | 24          |
 | Max threads per SM              | 1536        |
 | Max threads per block           | 1024        |
-| L1/shared memory per SM         | 100 KiB     |
-| Max shared memory per block     | 48 KiB      |
+| L1 cache + shared memory per SM | 128 KiB (100 KiB max for shared memory) |
+| Shared memory per block (default / max) | 48 KiB / 99 KiB |
 | Available registers per SM      | 65536       |
 | Available registers per block   | 65536       |
 | L2 cache                        | 32 MiB      |
@@ -212,12 +212,12 @@ To verify this behavior, we benchmarked 100 identical runs of this kernel with a
 
 #### Summary
 
-With this memory-bound kernel, the current implementation reached the limits of what we can do. In the previous section, we estimated our kernel to modify approximately $4\pi*10^6$ grid elements. Taking the stated bandwidth of 256 GB/s and the fact that for each element we need 8 bytes of data transferred (one float loaded and stored), the optimal kernel's runtime can consequently be computed as
+With this memory-bound kernel, the current implementation approaches the memory-bandwidth limit for our benchmark. In the previous section, we estimated our kernel to modify approximately $4\pi*10^6$ grid elements. Taking the stated bandwidth of 256 GB/s and the fact that for each element we need 8 bytes of data transferred (one float loaded and stored), a theoretical lower bound on the kernel's runtime can consequently be computed as
 $$
 \frac{32\pi*10^6 \mathrm{B}}{256 * 10^9 \frac{\mathrm{B}}{\mathrm{s}}}=\frac{\pi}{8}10^{-3}\mathrm{s}.
 $$
 
-Seeing that this evaluates to a runtime of approximately 393 µs, our profiled runtime is very good. Looking at Nsight Compute's roofline chart, we see our kernel sitting clearly memory bound almost at the roofline, with an arithmetic intensity of 4.63 FLOP/B and a compute throughput of almost 1 TFLOPS. This discrepancy shows that our earlier theoretical estimate was only an approximation. Nsight Compute's measurements reflect the compiler's actual issued instructions rather than the operations we counted by hand. In the below table we summarize each of the steps we took to arrive at our final version with their overall kernel runtime and relative performance improvement.
+Seeing that this lower bound evaluates to a runtime of approximately 393 µs, our profiled runtime is very good. Looking at Nsight Compute's roofline chart, we see our kernel sitting clearly memory bound almost at the roofline, with an arithmetic intensity of 4.63 FLOP/B and a compute throughput of almost 1 TFLOPS. This discrepancy shows that our earlier theoretical estimate was only an approximation. Nsight Compute's measurements reflect the operations and memory traffic of the compiled kernel rather than those we counted by hand. In the below table we summarize each of the steps we took to arrive at our final version with their overall kernel runtime and relative performance improvement.
 
 | Variant                 | Runtime (µs) | Reduction (%) |
 | ----------------------- | ------------ | ------------- |
