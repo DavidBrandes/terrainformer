@@ -25,8 +25,8 @@ GpuResources::GpuResources(cudaGraphicsResource** resources, std::shared_ptr<Sce
 std::shared_ptr<GpuResources> GpuResources::make(std::shared_ptr<Scene> scene) {
   cudaGraphicsResource* resources[2];
 
-  CUDA_CHECK(cudaGraphicsGLRegisterBuffer(&resources[0], scene->contour.vbo(), cudaGraphicsMapFlagsWriteDiscard));
-  CUDA_CHECK(cudaGraphicsGLRegisterBuffer(&resources[1], scene->map.heightsVbo(), cudaGraphicsMapFlagsWriteDiscard));
+  CUDA_CHECK(cudaGraphicsGLRegisterBuffer(&resources[0], scene->contour.vbo(), cudaGraphicsRegisterFlagsWriteDiscard));
+  CUDA_CHECK(cudaGraphicsGLRegisterBuffer(&resources[1], scene->map.heightsVbo(), cudaGraphicsRegisterFlagsNone));
 
   return std::shared_ptr<GpuResources>(new GpuResources{resources, scene});
 }
@@ -36,6 +36,7 @@ GpuResources::~GpuResources() {
   CUDA_CHECK(cudaGraphicsUnregisterResource(_resources[1]));
 
   CUDA_CHECK(cudaFree(_contourSegmentCount));
+  CUDA_CHECK(cudaFree(_thresholds));
 }
 
 std::shared_ptr<compute::MappedGpuResources> GpuResources::map() {

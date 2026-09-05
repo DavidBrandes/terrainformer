@@ -73,7 +73,8 @@ void launch_marching_squares() {
     dim3 block_dim_1(16, 16);
     dim3 grid_dim_1(compute::ceil_div(SIZE.width - 1, block_dim_1.x),
                     compute::ceil_div(SIZE.height - 1, block_dim_1.y));
-    compute::marching_squares<<<grid_dim_1, block_dim_1, THRESHOLD_COUNT>>>(heights, contours, thresholds);
+    compute::marching_squares<<<grid_dim_1, block_dim_1, THRESHOLD_COUNT * sizeof(float)>>>(heights, contours,
+                                                                                            thresholds);
   };
 
   GpuBuffer<int2> tmp_coordinates_buffer{max_contours_per_threshold * THRESHOLD_COUNT};
@@ -90,7 +91,7 @@ void launch_marching_squares() {
     dim3 block_dim_1(16, 16);
     dim3 grid_dim_1(compute::ceil_div(SIZE.width - 1, block_dim_1.x),
                     compute::ceil_div(SIZE.height - 1, block_dim_1.y));
-    perf::marching_squares_phase_1<<<grid_dim_1, block_dim_1, THRESHOLD_COUNT>>>(
+    perf::marching_squares_phase_1<<<grid_dim_1, block_dim_1, THRESHOLD_COUNT * sizeof(float)>>>(
         heights, count_buffer.data, max_contours_per_threshold * THRESHOLD_COUNT, tmp_coordinates_buffer.data,
         thresholds_buffer.data, tmp_thresholds_buffer.data, THRESHOLD_COUNT);
 

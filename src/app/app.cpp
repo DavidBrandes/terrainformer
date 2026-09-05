@@ -31,7 +31,7 @@ void Application::render(ApplicationState const& state) {
 }
 
 void Application::run() {
-  ApplicationState state;
+  ApplicationState state{};
   ApplicationRequests requests;
 
   initialize(state);

@@ -23,7 +23,7 @@ Result compute_contour(std::shared_ptr<MappedGpuResources> resources) {
   dim3 block_dim(16, 16);
   dim3 grid_dim(ceil_div(heights.size.width - 1, block_dim.x), ceil_div(heights.size.height - 1, block_dim.y));
 
-  marching_squares<<<grid_dim, block_dim>>>(heights, contours, thresholds);
+  marching_squares<<<grid_dim, block_dim, thresholds.count * sizeof(float)>>>(heights, contours, thresholds);
   CUDA_CHECK(cudaGetLastError());
 
   int contour_count;
