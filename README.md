@@ -1,14 +1,10 @@
 # Terrainformer
 
-[TODO: Intro]
+Terrainformer is an interactive terrain editor written in C++20, CUDA, and OpenGL. It lets the user raise and lower the terrain and watch its contour lines update in response. Both the height modification and contour computation are implemented as CUDA kernels.
 
-[TODO: GIF]
+The kernels sit at the heart of the application and are optimized specifically for how they are used here. The accompanying [CUDA kernel optimization journal](PROFILING.md) documents their path from naive implementations to the current ones through small, incremental profiling and optimization steps. It contains a few surprising results: small changes that made a big difference, seemingly sensible optimizations that made things slower, and even a case where giving a kernel more work made it run faster.
 
-## CUDA Optimization Journal
-
-[TODO: Optimization intro]
-
-[Read the CUDA kernel optimization journal](PROFILING.md).
+[DEMO]
 
 ## Build and Run
 
