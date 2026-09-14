@@ -4,8 +4,8 @@ height = 450
 fullscreen = false
 
 [grid.size]
-width = 600
-height = 300
+width = 960
+height = 600
 
 [grid.initialization]
 type = "sinusoidal"
@@ -17,7 +17,7 @@ persistence = 0.5
 seed = 42
 
 [grid.initialization.sinusoidal]
-amplitude = 1
+amplitude = 0.5
 frequency = 1
 
 [tool]
@@ -28,5 +28,5 @@ scroll_steps = 21
 
 [scene]
 preserve_aspect_ratio = false
-contour_count = 6
+contour_count = 20
 max_contour_segment_fraction = 0.05

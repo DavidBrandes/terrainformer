@@ -4,7 +4,7 @@ Terrainformer is an interactive terrain editor written in C++20, CUDA, and OpenG
 
 The kernels sit at the heart of the application and are optimized specifically for how they are used here. The accompanying [CUDA kernel optimization journal](PROFILING.md) documents their path from naive implementations to the current ones through small, incremental profiling and optimization steps. It contains a few surprising results: small changes that made a big difference, seemingly sensible optimizations that made things slower, and even a case where giving a kernel more work made it run faster.
 
-[DEMO]
+![Terrainformer terrain editing demo](assets/terrainformer-demo.gif)
 
 ## Build and Run
 
@@ -24,14 +24,14 @@ The application can be configured via [`config.toml`](config.toml).
 
 ## Controls
 
-| Input            | Action                          |
-| ---------------- | ------------------------------- |
-| Left/Right Mouse | Raise/lower terrain             |
-| Mouse Wheel      | Change brush radius             |
-| S                | Toggle the terrain tool         |
-| C                | Toggle scene cropping           |
-| F                | Toggle fullscreen mode          |
-| Q                | Quit                            |
+| Input            | Action                  |
+| ---------------- | ----------------------- |
+| Left/Right Mouse | Raise/lower terrain     |
+| Mouse Wheel      | Change brush radius     |
+| S                | Toggle the terrain tool |
+| C                | Toggle scene cropping   |
+| F                | Toggle fullscreen mode  |
+| Q                | Quit                    |
 
 ## License
 
